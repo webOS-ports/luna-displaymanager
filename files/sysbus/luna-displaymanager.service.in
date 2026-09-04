@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=com.palm.display;com.palm.ambientLightSensor;com.palm.SuspendBlocker
+Exec=@WEBOS_INSTALL_SBINDIR@/LunaDisplayManager
+Type=static

@@ -1,0 +1,30 @@
+{
+    "com.palm.display": [
+        "appmanager.management",
+        "database.management",
+        "database.operation",
+        "location.query",
+        "telephony.management",
+        "preferences.systempropertyquery",
+        "preferences.operation",
+        "audio.operation",
+        "auth.query",
+        "luna-sysmgr.operation",
+        "sleep.management"
+    ],
+    "com.palm.ambientLightSensor": [
+        "database.management",
+        "database.operation"
+    ],
+    "com.palm.SuspendBlocker*": [
+        "sleep.management"
+    ],
+    "com.palm.systemmanager-prefs-*": [
+        "database.management",
+        "database.operation"
+    ],
+    "com.palm.systemmanager-localeprefs-*": [
+        "database.management",
+        "database.operation"
+    ]
+}
