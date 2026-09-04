@@ -337,6 +337,10 @@ DisplayManager::DisplayManager()
         LSErrorFree (&lserror);
     }
 
+    // com.palm.keys has had no provider since its half of the old key
+    // handling was stripped from the monolith years ago; the watch is kept
+    // for parity and fires only if a provider ever returns. Slider state
+    // simply stays at its default until then.
     result = LSRegisterServerStatusEx(m_service, "com.palm.keys", DisplayManager::keysServiceNotification, this, NULL, &lserror);
     if (!result)
     {
