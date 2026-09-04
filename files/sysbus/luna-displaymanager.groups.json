@@ -1,5 +1,5 @@
 {
- "allowedNames": ["com.palm.display", "com.palm.ambientLightSensor", "com.palm.SuspendBlocker*", "com.palm.systemmanager-prefs-*", "com.palm.systemmanager-localeprefs-*"],
+ "allowedNames": ["", "com.palm.display", "com.palm.ambientLightSensor", "com.palm.SuspendBlocker*", "com.palm.systemmanager-prefs-*", "com.palm.systemmanager-localeprefs-*"],
  "display.operation": ["dev"],
  "display.query": ["dev"],
  "luna-sysmgr.operation": ["dev"]

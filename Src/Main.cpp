@@ -29,6 +29,8 @@
 #include "InputEventMonitor.h"
 
 #include <glib.h>
+#include <string.h>
+#include <strings.h>
 
 #include <QCoreApplication>
 #include <QtGlobal>
@@ -62,15 +64,67 @@ static void qtMsgHandler(QtMsgType type, const QMessageLogContext&, const QStrin
     }
 }
 
+/**
+ * The option set luna-sysmgr honoured, minus the ones that only made sense
+ * with a UI in-process. Kept: --ui minimal (first-use/recovery boots the
+ * shell in minimal mode and this daemon must not dim, lock-gate or run ALS
+ * there), -l/--logger (the state machine traces with g_debug/g_message and
+ * WARNING would hide all of it), and -t/--terminal.
+ */
+static void parseCommandlineOptions(int argc, char** argv)
+{
+    static gchar* s_uiStr = NULL;
+    static gchar* s_logLevelStr = NULL;
+    static gboolean s_useTerminal = false;
+
+    static GOptionEntry entries[] = {
+        { "ui", 'u', 0, G_OPTION_ARG_STRING, &s_uiStr, "UI type (minimal, luna)", "name" },
+        { "logger", 'l', 0, G_OPTION_ARG_STRING, &s_logLevelStr, "log level", "level" },
+        { "terminal", 't', 0, G_OPTION_ARG_NONE, &s_useTerminal, "Use terminal for logs", NULL },
+        { NULL }
+    };
+
+    GOptionContext* context = g_option_context_new(NULL);
+    g_option_context_add_main_entries(context, entries, NULL);
+    g_option_context_parse(context, &argc, &argv, NULL);
+
+    Settings* settings = Settings::LunaSettings();
+
+    if (s_uiStr && strcasecmp(s_uiStr, "minimal") == 0)
+        settings->uiType = Settings::UI_MINIMAL;
+
+    if (s_useTerminal)
+        settings->logger_useTerminal = true;
+
+    if (s_logLevelStr)
+    {
+        if (0 == strcasecmp(s_logLevelStr, "error"))
+            settings->logger_level = G_LOG_LEVEL_ERROR;
+        else if (0 == strcasecmp(s_logLevelStr, "critical"))
+            settings->logger_level = G_LOG_LEVEL_CRITICAL;
+        else if (0 == strcasecmp(s_logLevelStr, "warning"))
+            settings->logger_level = G_LOG_LEVEL_WARNING;
+        else if (0 == strcasecmp(s_logLevelStr, "message"))
+            settings->logger_level = G_LOG_LEVEL_MESSAGE;
+        else if (0 == strcasecmp(s_logLevelStr, "info"))
+            settings->logger_level = G_LOG_LEVEL_INFO;
+        else if (0 == strcasecmp(s_logLevelStr, "debug"))
+            settings->logger_level = G_LOG_LEVEL_DEBUG;
+    }
+
+    g_option_context_free(context);
+}
+
 int main(int argc, char** argv)
 {
     // Settings first: everything below reads it.
     Settings* settings = Settings::LunaSettings();
 
-    settings->logger_useSyslog = true;
 #if defined(TARGET_DESKTOP)
     settings->logger_useTerminal = true;
 #endif
+
+    parseCommandlineOptions(argc, argv);
 
     g_log_set_default_handler(logFilter, NULL);
 

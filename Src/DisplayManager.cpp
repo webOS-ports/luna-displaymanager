@@ -35,7 +35,6 @@
 #include "NyxSensorConnector.h"
 #endif
 
-#include <QApplication>
 #include <QKeyEvent>
 
 #include <SysMgrDeviceKeydefs.h>
@@ -702,16 +701,31 @@ bool DisplayManager::telephonyServiceNotification(LSHandle *sh, const char *serv
 
 bool DisplayManager::authServiceNotification(LSHandle *sh, const char *serviceName, bool connected, void *ctx)
 {
+    DisplayManager* dm = (DisplayManager*) ctx;
     LSError lserror;
     LSErrorInit(&lserror);
 
+    // The subscription dies with luna-authmanager. Cancel the old call
+    // before (re)subscribing so a bounce cannot accumulate callmap entries,
+    // and so its going-down error reply cannot race the fresh subscription.
+    if (dm->m_lockModeCallToken != LSMESSAGE_TOKEN_INVALID)
+    {
+        if (!LSCallCancel(sh, dm->m_lockModeCallToken, &lserror))
+        {
+            LSErrorPrint (&lserror, stderr);
+            LSErrorFree (&lserror);
+            LSErrorInit (&lserror);
+        }
+        dm->m_lockModeCallToken = LSMESSAGE_TOKEN_INVALID;
+    }
+
     if (connected)
     {
-        // Track the lock mode for unlockRequiresPasscode(). The subscription
-        // dies with luna-authmanager, so it is re-made on every reconnect.
+        // Track the lock mode for unlockRequiresPasscode().
         if (!LSCall(sh, "luna://com.palm.systemmanager/getDeviceLockMode",
                     "{\"subscribe\":true}",
-                    DisplayManager::cbDeviceLockModeChanged, ctx, NULL, &lserror))
+                    DisplayManager::cbDeviceLockModeChanged, ctx,
+                    &dm->m_lockModeCallToken, &lserror))
         {
             LSErrorPrint (&lserror, stderr);
             LSErrorFree (&lserror);
@@ -3444,17 +3458,30 @@ bool DisplayManager::cbDeviceLockModeChanged(LSHandle* handle, LSMessage* messag
     if (!root)
         return true;
 
-    std::string lockMode = "none";
-    std::string policyState = "none";
-
+    // Only a payload that actually carries the state may change our answer:
+    // the hub's service-went-down error reply has neither field, and treating
+    // it as "no passcode" would briefly unlock the device during an
+    // auth-service bounce.
     json_object* prop = json_object_object_get(root, "lockMode");
-    if (prop)
-        lockMode = json_object_get_string(prop);
-    prop = json_object_object_get(root, "policyState");
-    if (prop)
-        policyState = json_object_get_string(prop);
+    if (prop) {
+        std::string lockMode = json_object_get_string(prop);
+        std::string policyState = "none";
+        prop = json_object_object_get(root, "policyState");
+        if (prop)
+            policyState = json_object_get_string(prop);
 
-    dm->m_unlockRequiresPasscode = (lockMode != "none") || (policyState == "pending");
+        // A pending policy only demands a passcode if it actually requires
+        // one - the same policyPending() && passwordRequired() check the
+        // in-process code made. Absent field (older authmanager) stays
+        // fail-closed.
+        bool policyRequiresPassword = true;
+        prop = json_object_object_get(root, "policyRequiresPassword");
+        if (prop)
+            policyRequiresPassword = json_object_get_boolean(prop);
+
+        dm->m_unlockRequiresPasscode = (lockMode != "none") ||
+            (policyState == "pending" && policyRequiresPassword);
+    }
 
     json_object_put(root);
     return true;

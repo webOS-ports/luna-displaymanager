@@ -2,8 +2,13 @@
     "exeName":"@WEBOS_INSTALL_SBINDIR@/LunaDisplayManager",
     "trustLevel": "oem",
     "type": "privileged",
-    "allowedNames": ["com.palm.display", "com.palm.ambientLightSensor", "com.palm.SuspendBlocker*", "com.palm.systemmanager-prefs-*", "com.palm.systemmanager-localeprefs-*"],
+    "allowedNames": ["", "com.palm.display", "com.palm.ambientLightSensor", "com.palm.SuspendBlocker*", "com.palm.systemmanager-prefs-*", "com.palm.systemmanager-localeprefs-*"],
     "permissions": [
+        {
+            "service":"",
+            "inbound":["*"],
+            "outbound":["*"]
+        },
         {
             "service":"com.palm.display",
             "inbound":["*"],

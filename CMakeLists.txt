@@ -16,7 +16,7 @@
 #
 # LICENSE@@@
 
-cmake_minimum_required(VERSION 2.8.8)
+cmake_minimum_required(VERSION 3.5)
 
 project(luna-displaymanager CXX)
 
@@ -35,9 +35,9 @@ webos_add_compiler_flags(ALL -DQT_NO_KEYWORDS)
 webos_add_compiler_flags(ALL -DHAS_LUNA_PREF)
 webos_add_compiler_flags(ALL -DHAS_DISPLAY_TIMEOUT)
 
-find_package(Qt6 COMPONENTS Core Gui Widgets Sensors)
+find_package(Qt6 COMPONENTS Core Sensors)
 if (NOT Qt6_FOUND)
-    find_package(Qt5 5.15 REQUIRED COMPONENTS Core Gui Widgets Sensors)
+    find_package(Qt5 5.15 REQUIRED COMPONENTS Core Sensors)
 endif()
 
 find_package(PkgConfig "0.22" REQUIRED)
@@ -84,7 +84,7 @@ target_link_libraries(LunaDisplayManager
     ${PBNJSON_CPP_LIBRARIES}
     ${JSON_LIBRARIES}
     ${PMLOGLIB_LIBRARIES}
-    Qt::Core Qt::Gui Qt::Widgets Qt::Sensors
+    Qt::Core Qt::Sensors
     pthread)
 
 webos_build_daemon(NAME LunaDisplayManager)

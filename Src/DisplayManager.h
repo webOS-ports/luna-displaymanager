@@ -270,7 +270,13 @@ private:
     DisplayStateBase* m_currentState;
     DisplayStateBase** m_displayStates;
     DisplayLockState  m_lockState;
-    bool m_unlockRequiresPasscode = false;
+    // Fail-closed: until luna-authmanager's first getDeviceLockMode reply
+    // lands, act as if a passcode is set. The lock screen's own unlock
+    // (DisplayEventUnlockScreen) is never gated by this, so a device
+    // without a passcode is not locked out - only implicit unlocks (USB,
+    // dock) wait for the authoritative answer.
+    bool m_unlockRequiresPasscode = true;
+    LSMessageToken m_lockModeCallToken = LSMESSAGE_TOKEN_INVALID;
 
     SuspendBlocker<DisplayManager> m_suspendBlocker;
 
