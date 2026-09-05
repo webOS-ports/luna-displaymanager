@@ -1,6 +1,10 @@
 luna-displaymanager
 ===================
 
+Summary
+-------
+The LuneOS display daemon: display states, backlight, ALS, idle and lock timeouts, suspend handshake
+
 The LuneOS display daemon: the eight-state display machine (`On`, `Dim`,
 `Off`, `OnLocked`, `OffOnCall`, `OnPuck`, `DockMode`, `OffSuspended`),
 backlight and keypad LED brightness, ambient-light-sensor driven brightness,
