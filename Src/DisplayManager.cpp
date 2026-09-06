@@ -3543,8 +3543,8 @@ void DisplayManager::handleLockStateChange(int state, int displayEvent)
 {
     bool result;
     gchar *payload;
-    gchar *stateStr = "undefined";
-    gchar *event = "undefined";
+    const gchar *stateStr = "undefined";
+    const gchar *event = "undefined";
     LSError lserror;
 
     LSErrorInit(&lserror);
