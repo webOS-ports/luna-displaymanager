@@ -1731,13 +1731,13 @@ bool DisplayManager::controlGetProperty(LSHandle *sh, LSMessage *message, void *
     if (!array || !json_object_is_type(array, json_type_array))
         goto done;
 
-    for (int i=0; i<json_object_array_length(array); i++) {
+    for (size_t i=0; i<json_object_array_length(array); i++) {
 
         const char* property = json_object_get_string(json_object_array_get_idx(array, i));
         if (!property)
             continue;
 
-        g_debug ("%s: (%d) %s", __FUNCTION__, i, property);
+        g_debug ("%s: (%zu) %s", __FUNCTION__, i, property);
 
         if (0 == strcmp (property, "requestBlock"))
         {
@@ -2910,7 +2910,8 @@ bool DisplayManager::slider()
 
 void DisplayManager::backlightOn (int displayBrightness, int keyBrightness)
 {
-    g_debug("%s: displayBrightness %d keyBrightness %d", __PRETTY_FUNCTION__);
+    g_debug("%s: displayBrightness %d keyBrightness %d", __PRETTY_FUNCTION__,
+            displayBrightness, keyBrightness);
 
     // Ignore als for now (led-controller module needs t
     LedControl* lcKeypadAndDisplay = HostBase::instance()->getLedControlKeypadAndDisplay();
