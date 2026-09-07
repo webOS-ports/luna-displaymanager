@@ -50,7 +50,11 @@ SuspendBlockerBase::SuspendBlockerBase(GMainLoop* mainLoop)
     s_counter++;
     if (s_counter < 0)
         s_counter = 0;
-    asprintf(&m_name, "sysmgr-suspend-%08d", s_counter);
+    if (asprintf(&m_name, "sysmgr-suspend-%08d", s_counter) < 0) {
+        g_critical("%s:%d Failed to allocate SuspendBlocker client name",
+                   __PRETTY_FUNCTION__, __LINE__);
+        m_name = NULL;
+    }
     pthread_mutex_unlock(&s_mutex);
     
     m_nestedCtxt = g_main_context_new();
@@ -126,9 +130,13 @@ bool SuspendBlockerBase::cbSuspendRequest(LSHandle* sh, LSMessage* msg, void* ct
 
         char* message = 0;
 
-        asprintf(&message, "{\"ack\":%s,\"clientId\":\"%s\"}",
-                 val ? "true" : "false", s->m_id);
-        
+        if (asprintf(&message, "{\"ack\":%s,\"clientId\":\"%s\"}",
+                     val ? "true" : "false", s->m_id) < 0) {
+            g_critical("%s:%d Failed to allocate suspendRequestAck message",
+                       __PRETTY_FUNCTION__, __LINE__);
+            return true;
+        }
+
         s->callService(s->m_service, NULL,
                        "palm://com.webos.service.sleep/com/palm/power/suspendRequestAck",
                        message);
@@ -148,12 +156,17 @@ bool SuspendBlockerBase::cbPrepareSuspend(LSHandle* sh, LSMessage* msg, void* ct
 
         char* message = 0;
         
-        asprintf(&message, "{\"ack\":%s,\"clientId\":\"%s\"}",
-                 val ? "true" : "false", s->m_id);
-
-        s->callService(s->m_service, NULL,
-                       "palm://com.webos.service.sleep/com/palm/power/prepareSuspendAck",
-                       message);
+        if (asprintf(&message, "{\"ack\":%s,\"clientId\":\"%s\"}",
+                     val ? "true" : "false", s->m_id) < 0) {
+            g_critical("%s:%d Failed to allocate prepareSuspendAck message",
+                       __PRETTY_FUNCTION__, __LINE__);
+        }
+        else {
+            s->callService(s->m_service, NULL,
+                           "palm://com.webos.service.sleep/com/palm/power/prepareSuspendAck",
+                           message);
+            free(message);
+        }
 
         // FIXME: Temporarily disable. We are seeing hangs with the new LS
         //g_main_loop_run(s->m_nestedLoop);
@@ -243,13 +256,17 @@ bool SuspendBlockerBase::cbPowerdUp(LSHandle* sh, LSMessage* msg, void* ctx)
 
                 // Powerd up. Get our identifier
                 char* message = 0;
-                asprintf(&message, "{\"subscribe\":true,\"clientName\":\"%s\"}",
-                         s->m_name);
-            
-                s->callService(s->m_service, SuspendBlockerBase::cbIdentify,
-                               "palm://com.webos.service.sleep/com/palm/power/identify",
-                               message);
-                free(message);
+                if (asprintf(&message, "{\"subscribe\":true,\"clientName\":\"%s\"}",
+                             s->m_name) < 0) {
+                    g_critical("%s:%d Failed to allocate identify message",
+                               __PRETTY_FUNCTION__, __LINE__);
+                }
+                else {
+                    s->callService(s->m_service, SuspendBlockerBase::cbIdentify,
+                                   "palm://com.webos.service.sleep/com/palm/power/identify",
+                                   message);
+                    free(message);
+                }
             }
             else {
                 
@@ -314,11 +331,16 @@ void SuspendBlockerBase::registerSuspendRequest()
     
     // Register ourselves a client of powerd suspendRequests
     char* message = 0;
-    asprintf(&message, "{\"register\":true,\"clientId\":\"%s\"}", m_id);
+    if (asprintf(&message, "{\"register\":true,\"clientId\":\"%s\"}", m_id) < 0) {
+        g_critical("%s:%d Failed to allocate suspendRequestRegister message",
+                   __PRETTY_FUNCTION__, __LINE__);
+        m_registeredSuspendRequest = false;
+        return;
+    }
     callService(m_service, NULL,
                 "palm://com.webos.service.sleep/com/palm/power/suspendRequestRegister",
                 message);
-    free(message);      
+    free(message);
 }
 
 void SuspendBlockerBase::registerPrepareSuspend()
@@ -330,9 +352,14 @@ void SuspendBlockerBase::registerPrepareSuspend()
     
     // Register ourselves a client of powerd prepareSuspendRequests
     char* message = 0;
-    asprintf(&message, "{\"register\":true,\"clientId\":\"%s\"}", m_id);     
+    if (asprintf(&message, "{\"register\":true,\"clientId\":\"%s\"}", m_id) < 0) {
+        g_critical("%s:%d Failed to allocate prepareSuspendRegister message",
+                   __PRETTY_FUNCTION__, __LINE__);
+        m_registeredPrepareSuspend = false;
+        return;
+    }
     callService(m_service, NULL,
                 "palm://com.webos.service.sleep/com/palm/power/prepareSuspendRegister",
                 message);
-    free(message);                
+    free(message);
 }

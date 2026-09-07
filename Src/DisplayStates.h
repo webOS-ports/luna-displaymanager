@@ -99,6 +99,8 @@ class DisplayStateBase {
 
     public:
         DisplayStateBase();
+        // States are deleted through DisplayStateBase* (DisplayManager::clearStates).
+        virtual ~DisplayStateBase() = default;
 
     virtual DisplayState state() const = 0;
 
