@@ -1,7 +1,7 @@
 [Unit]
 Description=LuneOS display manager (display states, ALS, suspend blocking)
 Requires=ls-hubd.service
-After=ls-hubd.service luna-sys-service.service nyx.target configurator-db8.service luna-authmanager.service
+After=ls-hubd.service luna-sysservice.service nyx.target configurator-db8.service luna-authmanager.service
 Wants=luna-authmanager.service
 BindsTo=nyx.target
 
