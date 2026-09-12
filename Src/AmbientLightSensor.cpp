@@ -71,13 +71,12 @@
  *
  *   0 -> 0 lux (DARK), 2.2 -> 110 lux (INDOOR), 122 -> 6100 lux (OUTDOOR)
  *
- * This is the one value that is genuinely per-device. Until it can be derived
- * (the sensor itself reports no attenuation, and nyx has no ALS backend on
- * this hardware) a single conservative figure is better than the previous
- * behaviour, where Qt's own buckets - sized for a bare sensor - reported
- * "Dark" for every indoor reading and scaled the backlight to a tenth.
+ * That figure is per-device and cannot be derived - the sensor reports nothing
+ * about what sits in front of it - so it comes from the adaptation, as
+ * Settings::alsCalibration (deviceinfo_als_calibration). It defaults to 1.0,
+ * which takes an uncharacterised sensor at its word rather than applying some
+ * other device's correction to it.
  */
-static const qreal kAlsAttenuation = 50.0;
 
 static const qreal kAlsBorderLux[ALS_REGION_COUNT] = {
     -1.0,          /* UNDEFINED */
@@ -311,7 +310,7 @@ bool AmbientLightSensor::updateAlsLux (qreal lux)
      * those stay expressed in real ambient lux. Scaling the reading up rather
      * than the borders down also keeps the numbers well clear of the integer
      * lux resolution a sensor backend may report. */
-    lux *= kAlsAttenuation;
+    lux *= Settings::LunaSettings()->alsCalibration;
 
     /* Ring buffer: drop the oldest sample out of the running sum as it is
      * overwritten, so the mean never walks over stale readings. */
