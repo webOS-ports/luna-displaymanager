@@ -3918,7 +3918,27 @@ bool DisplayManager::cbDeviceLockModeChanged(LSHandle* handle, LSMessage* messag
 
 bool DisplayManager::updateLockState (DisplayLockState lockState, DisplayState displayState, DisplayEvent displayEvent)
 {
-    bool success = true;
+    /*
+     * Decide whether the unlock is allowed *before* committing anything.
+     *
+     * m_lockState used to be assigned at the top of this block, so a refused
+     * unlock left it reading "unlocked" while the shell was still showing the
+     * lock screen. lock() only posts DisplayEventLockScreen into the state
+     * machine, which is a no-op when that machine is already locked, so
+     * nothing ever put m_lockState back. Every later unlock request then
+     * compared equal here, skipped the switch entirely and returned success
+     * without firing handleLockStateChange - the shell was told nothing and
+     * could never be unlocked again short of restarting the display manager.
+     */
+    if (DisplayLockUnlocked == lockState &&
+        unlockRequiresPasscode() &&
+        displayEvent != DisplayEventUnlockScreen &&
+        !isOnCall())
+    {
+        g_warning("%s: Can't unlock as we have a passcode set", __PRETTY_FUNCTION__);
+        lock();
+        return false;
+    }
 
     if (lockState != m_lockState) {
         m_lockState = lockState;
@@ -3934,17 +3954,8 @@ bool DisplayManager::updateLockState (DisplayLockState lockState, DisplayState d
                 break;
             case DisplayLockUnlocked:
                 {
-                    // If we're going to unlock check first if that requires a passcode or not
-                    if (unlockRequiresPasscode() &&
-                        displayEvent != DisplayEventUnlockScreen &&
-                        !isOnCall())
-                    {
-                        g_warning("%s: Can't unlock as we have a passcode set", __PRETTY_FUNCTION__);
-                        success = false;
-                        lock();
-                        break;
-                    }
-
+                    /* The passcode check already ran above, before m_lockState
+                     * was committed. */
                     g_debug ("%s: firing DISPLAY_UNLOCK_SCREEN", __PRETTY_FUNCTION__);
                     handleLockStateChange(DISPLAY_UNLOCK_SCREEN, displayEvent);
                 }
@@ -3961,7 +3972,7 @@ bool DisplayManager::updateLockState (DisplayLockState lockState, DisplayState d
         }
     }
 
-    return success;
+    return true;
 }
 
 void DisplayManager::handleLockStateChange(int state, int displayEvent)
