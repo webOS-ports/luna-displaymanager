@@ -44,6 +44,59 @@
 
 #define ALS_CALIBRATION_TOKEN   "com.palm.properties.ALSCal"
 
+/*
+ * Region borders in lux, and the margin each border has to be cleared by
+ * before the region is allowed to move. Carried over from the pre-split
+ * luna-sysmgr, which sized them for an unobstructed sensor reading true
+ * ambient lux:
+ *
+ *   DARK   < 6 lux      margin 4
+ *   DIM    < 100 lux    margin 10
+ *   INDOOR < 1000 lux   margin 100
+ *   OUTDOOR  everything above
+ *
+ * A phone's ALS sits under the cover glass and reads far below the ambient
+ * level, so those borders have to be divided by the attenuation before they
+ * mean anything. Measured on a PinePhone Pro (stk3310, in_illuminance_scale
+ * 0.1), sensor lux against the ambient level it was standing in:
+ *
+ *   palm over the sensor           0      (dark)
+ *   normal room lighting           2.1 - 2.2   (~100-150 lux ambient)
+ *   torch against the cover glass  67 - 123    (several thousand lux)
+ *
+ * which puts the attenuation at roughly 50x. Multiplying the reading by that
+ * recovers something close to the real ambient level, so the borders above can
+ * stay as they are - physically meaningful lux rather than device-specific
+ * magic - and all three measurements land in the region they belong to:
+ *
+ *   0 -> 0 lux (DARK), 2.2 -> 110 lux (INDOOR), 122 -> 6100 lux (OUTDOOR)
+ *
+ * This is the one value that is genuinely per-device. Until it can be derived
+ * (the sensor itself reports no attenuation, and nyx has no ALS backend on
+ * this hardware) a single conservative figure is better than the previous
+ * behaviour, where Qt's own buckets - sized for a bare sensor - reported
+ * "Dark" for every indoor reading and scaled the backlight to a tenth.
+ */
+static const qreal kAlsAttenuation = 50.0;
+
+static const qreal kAlsBorderLux[ALS_REGION_COUNT] = {
+    -1.0,          /* UNDEFINED */
+    6.0,           /* DARK    */
+    100.0,         /* DIM     */
+    1000.0,        /* INDOOR  */
+    -1.0,          /* OUTDOOR - open ended, see updateAlsLux() */
+    -1.0           /* SUNNY   */
+};
+
+static const qreal kAlsMarginLux[ALS_REGION_COUNT] = {
+    0.0,           /* UNDEFINED */
+    4.0,           /* DARK    */
+    10.0,          /* DIM     */
+    100.0,         /* INDOOR  */
+    0.0,           /* OUTDOOR */
+    0.0            /* SUNNY   */
+};
+
 AmbientLightSensor* AmbientLightSensor::m_instance = NULL;
 
 /*! \page com_palm_ambient_light_sensor_control Service API com.palm.ambientLightSensor/control/
@@ -66,6 +119,12 @@ AmbientLightSensor::AmbientLightSensor ()
     , m_alsDisabled(0)
     , m_alsHiddOnline(false)
     , m_als (0)
+    , m_lightSensor (0)
+    , m_alsSampleHead (0)
+    , m_alsSampleCount (0)
+    , m_alsSum (0.0)
+    , m_alsCountInRegion (0)
+    , m_alsFastRate (false)
 {
     LSError lserror;
     LSErrorInit(&lserror);
@@ -115,11 +174,35 @@ AmbientLightSensor::AmbientLightSensor ()
         LSErrorFree (&lserror);
     }
 
-    if (Settings::LunaSettings()->enableAls) {
-    m_alsEnabled = true; 
+    for (int i = 0; i < ALS_REGION_COUNT; i++) {
+        m_alsBorder[i] = kAlsBorderLux[i];
+        m_alsMargin[i] = kAlsMarginLux[i];
+    }
+    resetAlsSamples();
 
-    m_als = new QAmbientLightSensor();
-    connect(m_als, SIGNAL(readingChanged()), this, SLOT(slotReadingChanged()));
+    if (Settings::LunaSettings()->enableAls) {
+    m_alsEnabled = true;
+
+    /*
+     * Prefer the sensor that reports lux: the region estimation below needs a
+     * magnitude to average and compare against borders. QAmbientLightSensor
+     * only hands back Qt's pre-bucketed LightLevel, which is derived for an
+     * unobstructed sensor and so reads "Dark" indoors on any phone.
+     */
+    m_lightSensor = new QLightSensor(this);
+
+    if (m_lightSensor->connectToBackend()) {
+        connect(m_lightSensor, SIGNAL(readingChanged()), this, SLOT(slotLightReadingChanged()));
+    }
+    else {
+        g_warning("%s: no lux sensor backend, falling back to QAmbientLightSensor",
+                  __PRETTY_FUNCTION__);
+        delete m_lightSensor;
+        m_lightSensor = 0;
+
+        m_als = new QAmbientLightSensor();
+        connect(m_als, SIGNAL(readingChanged()), this, SLOT(slotReadingChanged()));
+    }
     }
     else {
         g_warning ("%s: ALS is not enabled", __PRETTY_FUNCTION__); 
@@ -157,6 +240,157 @@ void AmbientLightSensor::slotReadingChanged ()
     QAmbientLightReading *reading = m_als->reading();
     update(static_cast<int>(reading->lightLevel()));
     return;
+}
+
+void AmbientLightSensor::slotLightReadingChanged ()
+{
+    QLightReading *reading = m_lightSensor->reading();
+
+    if (NULL == reading)
+        return;
+
+    updateAlsLux(reading->lux());
+}
+
+/*
+ * The sensor only needs to be read quickly while the light is actually
+ * changing. luna-sysmgr drove this through nyx's report rate; the reading here
+ * comes from the Qt sensor, so the rate has to be set on that instead - asking
+ * nyx would change a sampling loop nothing is listening to.
+ */
+void AmbientLightSensor::setAlsSampleRate (bool fast)
+{
+    if (fast == m_alsFastRate)
+        return;
+
+    m_alsFastRate = fast;
+
+    if (NULL != m_lightSensor) {
+        m_lightSensor->setDataRate(fast ? ALS_RATE_FAST_HZ : ALS_RATE_SLOW_HZ);
+        g_debug("%s: sampling ALS at %d Hz", __PRETTY_FUNCTION__,
+                fast ? ALS_RATE_FAST_HZ : ALS_RATE_SLOW_HZ);
+    }
+}
+
+void AmbientLightSensor::resetAlsSamples ()
+{
+    for (int i = 0; i < ALS_SAMPLE_SIZE; i++)
+        m_alsSamples[i] = 0.0;
+
+    m_alsSampleHead = 0;
+    m_alsSampleCount = 0;
+    m_alsSum = 0.0;
+    m_alsCountInRegion = 0;
+}
+
+/**
+ * Estimate the ALS region from a lux reading.
+ *
+ * Single readings are noisy and a bare comparison against a border makes the
+ * region - and with it the backlight - chatter whenever the light sits on a
+ * boundary. So average over the last ALS_SAMPLE_SIZE readings and require the
+ * mean to clear a border by that border's margin before moving, walking more
+ * than one region at a time when the light really has changed that much.
+ */
+bool AmbientLightSensor::updateAlsLux (qreal lux)
+{
+    if (Settings::LunaSettings()->hardwareType != Settings::HardwareTypeDevice)
+        return false;
+
+    if (lux < 0.0) {
+        g_warning("%s: invalid lux %f", __PRETTY_FUNCTION__, lux);
+        return false;
+    }
+
+    if (m_alsDisabled > 0 || !m_alsEnabled) {
+        setCurrentRegion(ALS_REGION_UNDEFINED);
+        return false;
+    }
+
+    /* Correct for the cover glass before comparing against the borders, so
+     * those stay expressed in real ambient lux. Scaling the reading up rather
+     * than the borders down also keeps the numbers well clear of the integer
+     * lux resolution a sensor backend may report. */
+    lux *= kAlsAttenuation;
+
+    /* Ring buffer: drop the oldest sample out of the running sum as it is
+     * overwritten, so the mean never walks over stale readings. */
+    m_alsSum -= m_alsSamples[m_alsSampleHead];
+    m_alsSamples[m_alsSampleHead] = lux;
+    m_alsSum += lux;
+    m_alsSampleHead = (m_alsSampleHead + 1) % ALS_SAMPLE_SIZE;
+
+    if (m_alsSampleCount < ALS_SAMPLE_SIZE)
+        m_alsSampleCount++;
+
+    /* Until the window has filled, average over what we actually have rather
+     * than over zeroes, which would otherwise drag the mean towards DARK. */
+    qreal mean = m_alsSum / m_alsSampleCount;
+
+    /* A single reading outside the current band means the light is moving:
+     * sample quickly until it has settled again, then drop back.
+     *
+     * The range test has to come first: m_alsRegion is ALS_REGION_UNDEFINED
+     * (0) until the first estimate lands, and the lower border of a region is
+     * indexed as region - 1. */
+    bool inBand = false;
+
+    if (m_alsRegion >= ALS_REGION_DARK && m_alsRegion <= ALS_REGION_SUNNY) {
+        inBand = !(lux < (m_alsBorder[m_alsRegion - 1] - m_alsMargin[m_alsRegion - 1]) ||
+                   (m_alsBorder[m_alsRegion] >= 0.0 &&
+                    lux > (m_alsBorder[m_alsRegion] + m_alsMargin[m_alsRegion])));
+    }
+
+    if (!inBand) {
+        m_alsCountInRegion = 0;
+        setAlsSampleRate(true);
+    }
+    else if (m_alsCountInRegion < ALS_SETTLE_SAMPLES) {
+        if (++m_alsCountInRegion >= ALS_SETTLE_SAMPLES)
+            setAlsSampleRate(false);
+    }
+
+    int region = m_alsRegion;
+
+    if (region < ALS_REGION_DARK || region > ALS_REGION_SUNNY)
+        region = ALS_REGION_INDOOR;
+
+    while (region > ALS_REGION_DARK &&
+           mean < (m_alsBorder[region - 1] - m_alsMargin[region - 1])) {
+        --region;
+    }
+
+    while (region < ALS_REGION_OUTDOOR &&
+           m_alsBorder[region] >= 0.0 &&
+           mean > (m_alsBorder[region] + m_alsMargin[region])) {
+        ++region;
+    }
+
+    if (region != m_alsRegion) {
+        g_message("%s: lux %.2f mean %.2f -> region %d (was %d)",
+                  __PRETTY_FUNCTION__, lux, mean, region, m_alsRegion);
+    }
+
+    setCurrentRegion(region);
+
+    if (m_alsSubscriptions > 0) {
+        LSError lserror;
+        LSErrorInit(&lserror);
+
+        gchar *status = g_strdup_printf(
+                "{\"returnValue\":true,\"current\":%.2f,\"region\":%i}",
+                lux, m_alsRegion);
+
+        if (NULL != status) {
+            if (!LSSubscriptionReply(m_service, "/control/status", status, &lserror)) {
+                LSErrorPrint(&lserror, stderr);
+                LSErrorFree(&lserror);
+            }
+            g_free(status);
+        }
+    }
+
+    return true;
 }
 
 int AmbientLightSensor::getCurrentRegion ()
@@ -213,6 +447,14 @@ bool AmbientLightSensor::on ()
 
     setCurrentRegion(ALS_REGION_INDOOR);
 
+    resetAlsSamples();
+
+    if (NULL != m_lightSensor)
+    {
+        g_debug ("%s: ALS on!", __PRETTY_FUNCTION__);
+        return m_lightSensor->start();
+    }
+
     if (NULL != m_als)
     {
         g_debug ("%s: ALS on!", __PRETTY_FUNCTION__);
@@ -244,6 +486,12 @@ bool AmbientLightSensor::off ()
     m_alsIsOn = false;
 
     m_alsLastOff = Time::curTimeMs();
+
+    if (NULL != m_lightSensor)
+    {
+        g_debug ("%s: ALS off!", __PRETTY_FUNCTION__);
+        m_lightSensor->stop();
+    }
 
     if (NULL != m_als)
     {
