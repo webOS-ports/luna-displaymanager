@@ -3918,29 +3918,35 @@ bool DisplayManager::cbDeviceLockModeChanged(LSHandle* handle, LSMessage* messag
 
 bool DisplayManager::updateLockState (DisplayLockState lockState, DisplayState displayState, DisplayEvent displayEvent)
 {
-    /*
-     * Decide whether the unlock is allowed *before* committing anything.
-     *
-     * m_lockState used to be assigned at the top of this block, so a refused
-     * unlock left it reading "unlocked" while the shell was still showing the
-     * lock screen. lock() only posts DisplayEventLockScreen into the state
-     * machine, which is a no-op when that machine is already locked, so
-     * nothing ever put m_lockState back. Every later unlock request then
-     * compared equal here, skipped the switch entirely and returned success
-     * without firing handleLockStateChange - the shell was told nothing and
-     * could never be unlocked again short of restarting the display manager.
-     */
-    if (DisplayLockUnlocked == lockState &&
-        unlockRequiresPasscode() &&
-        displayEvent != DisplayEventUnlockScreen &&
-        !isOnCall())
-    {
-        g_warning("%s: Can't unlock as we have a passcode set", __PRETTY_FUNCTION__);
-        lock();
-        return false;
-    }
-
     if (lockState != m_lockState) {
+        /*
+         * Decide whether the unlock is allowed *before* committing m_lockState.
+         *
+         * It used to be assigned at the top of this block, ahead of the check
+         * below, so a refused unlock left it reading "unlocked" while the shell
+         * was still showing the lock screen. lock() only posts
+         * DisplayEventLockScreen into the display state machine, which is a
+         * no-op when that machine is already locked, so nothing ever put
+         * m_lockState back. Every later unlock request then compared equal to
+         * the cached state, skipped the switch entirely and returned success
+         * without firing handleLockStateChange - the shell was told nothing and
+         * could not be unlocked again short of restarting the display manager.
+         *
+         * This has to stay inside the "state actually changed" test: hoisting
+         * it out makes the guard run on every no-op unlock request too, and
+         * with unlockRequiresPasscode() stuck true that turns each one into a
+         * spurious lock() instead of the silent success it used to be.
+         */
+        if (DisplayLockUnlocked == lockState &&
+            unlockRequiresPasscode() &&
+            displayEvent != DisplayEventUnlockScreen &&
+            !isOnCall())
+        {
+            g_warning("%s: Can't unlock as we have a passcode set", __PRETTY_FUNCTION__);
+            lock();
+            return false;
+        }
+
         m_lockState = lockState;
         switch (lockState) {
             case DisplayLockLocked:
