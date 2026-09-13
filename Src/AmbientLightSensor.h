@@ -28,7 +28,9 @@
 #include <luna-service2/lunaservice.h>
 #include <list>
 #include <QAmbientLightSensor>
-#include <QLightSensor>
+#include <QSocketNotifier>
+
+#include <nyx/nyx_client.h>
 
 #define ALS_REGION_COUNT       6
 
@@ -39,9 +41,6 @@
  * rate, matching the settle count the pre-split luna-sysmgr used. */
 #define ALS_SETTLE_SAMPLES     8
 
-/* Sampling rates in Hz behind the fast/slow distinction. */
-#define ALS_RATE_FAST_HZ      10
-#define ALS_RATE_SLOW_HZ       1
 
 #define ALS_REGION_UNDEFINED  0
 #define ALS_REGION_DARK       1
@@ -86,7 +85,13 @@ private:
     int32_t                m_alsDisabled;
     bool                   m_alsHiddOnline;
     QAmbientLightSensor*          m_als;
-    QLightSensor*                 m_lightSensor;
+
+    /* nyx is the preferred source: it reports lux, which the region
+     * estimation below needs. The Qt sensorfw plugin registers a lightsensor
+     * identifier but its backend only ever produces a QAmbientLightReading,
+     * i.e. the pre-bucketed LightLevel, so lux cannot be had that way. */
+    nyx_device_handle_t           m_alsHandle;
+    QSocketNotifier*              m_alsNotifier;
 
     /* Region estimation, as the pre-split luna-sysmgr did it: a running mean
      * over the last ALS_SAMPLE_SIZE readings, compared against per-region
@@ -112,7 +117,7 @@ private:
 
 private Q_SLOTS:
     void slotReadingChanged ();
-    void slotLightReadingChanged ();
+    void readAlsData ();
 };
 
 #endif /* AMBIENTLIGHTSENSOR_H */

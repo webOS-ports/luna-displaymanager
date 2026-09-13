@@ -22,6 +22,10 @@
 
 
 #include "AmbientLightSensor.h"
+#include "HostBase.h"
+#include "InputControl.h"
+
+#include <nyx/client/nyx_sensor_als.h>
 
 #include "Common.h"
 #include "HostBase.h"
@@ -118,7 +122,8 @@ AmbientLightSensor::AmbientLightSensor ()
     , m_alsDisabled(0)
     , m_alsHiddOnline(false)
     , m_als (0)
-    , m_lightSensor (0)
+    , m_alsHandle (NULL)
+    , m_alsNotifier (0)
     , m_alsSampleHead (0)
     , m_alsSampleCount (0)
     , m_alsSum (0.0)
@@ -183,29 +188,41 @@ AmbientLightSensor::AmbientLightSensor ()
     m_alsEnabled = true;
 
     /*
-     * Prefer the sensor that reports lux: the region estimation below needs a
-     * magnitude to average and compare against borders. QAmbientLightSensor
-     * only hands back Qt's pre-bucketed LightLevel, which is derived for an
-     * unobstructed sensor and so reads "Dark" indoors on any phone.
+     * Prefer nyx. The region estimation needs a magnitude in lux, and the Qt
+     * sensorfw plugin cannot supply one: it registers a lightsensor identifier
+     * but its SensorfwLightSensor backend only ever fills in a
+     * QAmbientLightReading, which carries Qt's pre-bucketed LightLevel. Those
+     * buckets are sized for an unobstructed sensor, so on a phone whose ALS
+     * sits under the cover glass every indoor reading arrives as "Dark".
      */
-    m_lightSensor = new QLightSensor(this);
+    InputControl *alsControl = HostBase::instance()->getInputControlALS();
 
-    if (m_lightSensor->connectToBackend()) {
-        connect(m_lightSensor, SIGNAL(readingChanged()), this, SLOT(slotLightReadingChanged()));
+    if (alsControl)
+        m_alsHandle = alsControl->getHandle();
+
+    if (m_alsHandle) {
+        int fd = -1;
+        nyx_error_t error = nyx_device_get_event_source(m_alsHandle, &fd);
+
+        if (error == NYX_ERROR_NONE && fd > 0) {
+            m_alsNotifier = new QSocketNotifier(fd, QSocketNotifier::Read, this);
+            connect(m_alsNotifier, SIGNAL(activated(int)), this, SLOT(readAlsData()));
+            g_warning("ALSDBG: using nyx ALS, event source fd=%d", fd);
+        }
+        else {
+            g_warning("ALSDBG: nyx ALS has no event source (err %d fd %d)", (int) error, fd);
+            m_alsHandle = NULL;
+        }
     }
-    else {
-        g_warning("%s: no lux sensor backend, falling back to QAmbientLightSensor",
-                  __PRETTY_FUNCTION__);
-        delete m_lightSensor;
-        m_lightSensor = 0;
 
+    if (!m_alsHandle) {
+        g_warning("ALSDBG: no nyx ALS, falling back to QAmbientLightSensor (LightLevel only)");
         m_als = new QAmbientLightSensor();
         connect(m_als, SIGNAL(readingChanged()), this, SLOT(slotReadingChanged()));
     }
     }
     else {
-        g_warning ("%s: ALS is not enabled", __PRETTY_FUNCTION__); 
-
+        g_warning ("%s: ALS is not enabled", __PRETTY_FUNCTION__);
     }
 
     m_instance = this;
@@ -241,22 +258,35 @@ void AmbientLightSensor::slotReadingChanged ()
     return;
 }
 
-void AmbientLightSensor::slotLightReadingChanged ()
+void AmbientLightSensor::readAlsData ()
 {
-    QLightReading *reading = m_lightSensor->reading();
+    nyx_event_handle_t event_handle = NULL;
+    nyx_error_t error;
 
-    if (NULL == reading)
-        return;
+    /* Drain every queued event: the descriptor is level triggered, so anything
+     * left behind wakes us straight back up. */
+    while ((error = nyx_device_get_event(m_alsHandle, &event_handle)) == NYX_ERROR_NONE
+           && event_handle != NULL)
+    {
+        int32_t lux = 0;
 
-    updateAlsLux(reading->lux());
+        if (nyx_sensor_als_event_get_intensity(event_handle, &lux) == NYX_ERROR_NONE) {
+            g_warning("ALSDBG: nyx reading lux=%d", lux);
+            updateAlsLux((qreal) lux);
+        }
+        else {
+            g_warning("ALSDBG: could not read intensity out of an ALS event");
+        }
+
+        nyx_device_release_event(m_alsHandle, event_handle);
+        event_handle = NULL;
+    }
+
+    if (error != NYX_ERROR_NONE)
+        g_warning("ALSDBG: nyx_device_get_event returned %d", (int) error);
 }
 
-/*
- * The sensor only needs to be read quickly while the light is actually
- * changing. luna-sysmgr drove this through nyx's report rate; the reading here
- * comes from the Qt sensor, so the rate has to be set on that instead - asking
- * nyx would change a sampling loop nothing is listening to.
- */
+
 void AmbientLightSensor::setAlsSampleRate (bool fast)
 {
     if (fast == m_alsFastRate)
@@ -264,10 +294,10 @@ void AmbientLightSensor::setAlsSampleRate (bool fast)
 
     m_alsFastRate = fast;
 
-    if (NULL != m_lightSensor) {
-        m_lightSensor->setDataRate(fast ? ALS_RATE_FAST_HZ : ALS_RATE_SLOW_HZ);
-        g_debug("%s: sampling ALS at %d Hz", __PRETTY_FUNCTION__,
-                fast ? ALS_RATE_FAST_HZ : ALS_RATE_SLOW_HZ);
+    if (m_alsHandle) {
+        nyx_error_t error = nyx_device_set_report_rate(m_alsHandle,
+                                fast ? NYX_REPORT_RATE_HIGH : NYX_REPORT_RATE_LOW);
+        g_warning("ALSDBG: report rate -> %s (err %d)", fast ? "HIGH" : "LOW", (int) error);
     }
 }
 
@@ -293,8 +323,10 @@ void AmbientLightSensor::resetAlsSamples ()
  */
 bool AmbientLightSensor::updateAlsLux (qreal lux)
 {
-    if (Settings::LunaSettings()->hardwareType != Settings::HardwareTypeDevice)
+    if (Settings::LunaSettings()->hardwareType != Settings::HardwareTypeDevice) {
+        g_warning("ALSDBG: updateAlsLux bail - not a device");
         return false;
+    }
 
     if (lux < 0.0) {
         g_warning("%s: invalid lux %f", __PRETTY_FUNCTION__, lux);
@@ -302,6 +334,7 @@ bool AmbientLightSensor::updateAlsLux (qreal lux)
     }
 
     if (m_alsDisabled > 0 || !m_alsEnabled) {
+        g_warning("ALSDBG: updateAlsLux bail - disabled=%d enabled=%d", (int) m_alsDisabled, (int) m_alsEnabled);
         setCurrentRegion(ALS_REGION_UNDEFINED);
         return false;
     }
@@ -365,10 +398,10 @@ bool AmbientLightSensor::updateAlsLux (qreal lux)
         ++region;
     }
 
-    if (region != m_alsRegion) {
-        g_message("%s: lux %.2f mean %.2f -> region %d (was %d)",
-                  __PRETTY_FUNCTION__, lux, mean, region, m_alsRegion);
-    }
+    g_warning("ALSDBG: lux=%.3f cal=%.1f -> %.2f  mean=%.2f n=%d  region %d -> %d  inBand=%d fast=%d",
+              lux / (Settings::LunaSettings()->alsCalibration > 0 ? Settings::LunaSettings()->alsCalibration : 1.0),
+              Settings::LunaSettings()->alsCalibration, lux, mean, m_alsSampleCount,
+              m_alsRegion, region, (int) inBand, (int) m_alsFastRate);
 
     setCurrentRegion(region);
 
@@ -419,8 +452,14 @@ bool AmbientLightSensor::stop ()
 
 bool AmbientLightSensor::on ()
 {
-    if (Settings::LunaSettings()->hardwareType != Settings::HardwareTypeDevice)
+    g_warning("ALSDBG: on() entered - hwType=%d displayOn=%d isOn=%d enabled=%d disabled=%d nyxHandle=%p",
+              (int) Settings::LunaSettings()->hardwareType, (int) m_alsDisplayOn,
+              (int) m_alsIsOn, (int) m_alsEnabled, (int) m_alsDisabled, (void*) m_alsHandle);
+
+    if (Settings::LunaSettings()->hardwareType != Settings::HardwareTypeDevice) {
+        g_warning("ALSDBG: on() -> not a device, bail");
         return true;
+    }
 
     LSError lserror;
     LSErrorInit(&lserror);
@@ -428,17 +467,23 @@ bool AmbientLightSensor::on ()
 
     // if display is off do not bother to enable the 
     // als sensor
-    if (!m_alsDisplayOn)
+    if (!m_alsDisplayOn) {
+        g_warning("ALSDBG: on() -> display is off, bail");
         return true;
+    }
 
     // if it is already one do not bother to enable it
-    if (m_alsIsOn)
+    if (m_alsIsOn) {
+        g_warning("ALSDBG: on() -> already on, bail");
         return true;
+    }
 
     // if we are not calibrated and there are no subscriptions
     // do not enable it
-    if (!m_alsEnabled)
+    if (!m_alsEnabled) {
+        g_warning("ALSDBG: on() -> ALS not enabled, bail");
         return true;
+    }
 
     m_alsIsOn = true;
 
@@ -448,10 +493,11 @@ bool AmbientLightSensor::on ()
 
     resetAlsSamples();
 
-    if (NULL != m_lightSensor)
+    if (m_alsHandle)
     {
-        g_debug ("%s: ALS on!", __PRETTY_FUNCTION__);
-        return m_lightSensor->start();
+        nyx_error_t error = nyx_device_set_operating_mode(m_alsHandle, NYX_OPERATING_MODE_ON);
+        g_warning("ALSDBG: nyx ALS operating mode ON (err %d)", (int) error);
+        return (error == NYX_ERROR_NONE || error == NYX_ERROR_NOT_IMPLEMENTED);
     }
 
     if (NULL != m_als)
@@ -486,10 +532,10 @@ bool AmbientLightSensor::off ()
 
     m_alsLastOff = Time::curTimeMs();
 
-    if (NULL != m_lightSensor)
+    if (m_alsHandle)
     {
-        g_debug ("%s: ALS off!", __PRETTY_FUNCTION__);
-        m_lightSensor->stop();
+        nyx_error_t error = nyx_device_set_operating_mode(m_alsHandle, NYX_OPERATING_MODE_OFF);
+        g_warning("ALSDBG: nyx ALS operating mode OFF (err %d)", (int) error);
     }
 
     if (NULL != m_als)
