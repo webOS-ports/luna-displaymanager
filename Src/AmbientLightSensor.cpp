@@ -123,7 +123,6 @@ AmbientLightSensor::AmbientLightSensor ()
     , m_alsHiddOnline(false)
     , m_als (0)
     , m_alsHandle (NULL)
-    , m_alsNotifier (0)
     , m_alsSampleHead (0)
     , m_alsSampleCount (0)
     , m_alsSum (0.0)
@@ -201,18 +200,19 @@ AmbientLightSensor::AmbientLightSensor ()
         m_alsHandle = alsControl->getHandle();
 
     if (m_alsHandle) {
-        int fd = -1;
-        nyx_error_t error = nyx_device_get_event_source(m_alsHandle, &fd);
-
-        if (error == NYX_ERROR_NONE && fd > 0) {
-            m_alsNotifier = new QSocketNotifier(fd, QSocketNotifier::Read, this);
-            connect(m_alsNotifier, SIGNAL(activated(int)), this, SLOT(readAlsData()));
-            g_warning("ALSDBG: using nyx ALS, event source fd=%d", fd);
-        }
-        else {
-            g_warning("ALSDBG: nyx ALS has no event source (err %d fd %d)", (int) error, fd);
-            m_alsHandle = NULL;
-        }
+        /*
+         * HostBase already owns the reader: HostArm::setupInput() puts a
+         * QSocketNotifier on the ALS event source and drains it in
+         * readALSData(). Opening a second notifier on the same descriptor does
+         * not work - whichever handler runs first takes the event and the
+         * other finds an empty queue - so take the reading from its signal
+         * instead. In a daemon with no window that is the only way to see it
+         * at all, since the AlsEvent it posts goes to activeWindow(), which is
+         * null here.
+         */
+        connect(HostBase::instance(), SIGNAL(ambientLightReading(int)),
+                this, SLOT(readAlsData(int)));
+        g_warning("ALSDBG: using nyx ALS via HostBase::ambientLightReading");
     }
 
     if (!m_alsHandle) {
@@ -258,35 +258,17 @@ void AmbientLightSensor::slotReadingChanged ()
     return;
 }
 
-void AmbientLightSensor::readAlsData ()
+void AmbientLightSensor::readAlsData (int lux)
 {
-    nyx_event_handle_t event_handle = NULL;
-    nyx_error_t error;
-
-    /* Drain every queued event: the descriptor is level triggered, so anything
-     * left behind wakes us straight back up. */
-    while ((error = nyx_device_get_event(m_alsHandle, &event_handle)) == NYX_ERROR_NONE
-           && event_handle != NULL)
-    {
-        int32_t lux = 0;
-
-        if (nyx_sensor_als_event_get_intensity(event_handle, &lux) == NYX_ERROR_NONE) {
-            g_warning("ALSDBG: nyx reading lux=%d", lux);
-            updateAlsLux((qreal) lux);
-        }
-        else {
-            g_warning("ALSDBG: could not read intensity out of an ALS event");
-        }
-
-        nyx_device_release_event(m_alsHandle, event_handle);
-        event_handle = NULL;
-    }
-
-    if (error != NYX_ERROR_NONE)
-        g_warning("ALSDBG: nyx_device_get_event returned %d", (int) error);
+    g_warning("ALSDBG: reading lux=%d", lux);
+    updateAlsLux((qreal) lux);
 }
 
-
+/*
+ * The sensor only needs to be read quickly while the light is actually
+ * changing. nyx owns the sampling timer, so the rate is set on the device -
+ * which is what makes the fast/slow distinction real rather than advisory.
+ */
 void AmbientLightSensor::setAlsSampleRate (bool fast)
 {
     if (fast == m_alsFastRate)
