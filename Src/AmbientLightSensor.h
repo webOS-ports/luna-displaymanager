@@ -28,6 +28,7 @@
 #include <luna-service2/lunaservice.h>
 #include <list>
 #include <QAmbientLightSensor>
+#include <QTimer>
 
 #include <nyx/nyx_client.h>
 
@@ -39,6 +40,9 @@
 /* Consecutive in-band readings before the sensor is allowed back to the slow
  * rate, matching the settle count the pre-split luna-sysmgr used. */
 #define ALS_SETTLE_SAMPLES     8
+
+/* How long a new Qt LightLevel has to hold before the region follows it. */
+#define ALS_LEVEL_SETTLE_MS    1000
 
 
 #define ALS_REGION_UNDEFINED  0
@@ -103,6 +107,16 @@ private:
     int32_t                m_alsCountInRegion;
     bool                   m_alsFastRate;
 
+    /* The Qt fallback has no lux to average, only LightLevel buckets, and a
+     * sensor coming up can report a stray bucket - on the MP01 one "Bright"
+     * between two "Dark"s, which was enough to flash the frontlight to full.
+     * So a changed level only takes effect once it has held for
+     * ALS_LEVEL_SETTLE_MS; the first reading after the sensor starts is taken
+     * straight away, since there is nothing better to go on. */
+    QTimer                 m_levelTimer;
+    int32_t                m_pendingLevel;
+    bool                   m_levelSeen;
+
     static AmbientLightSensor * m_instance;
 
     bool on();
@@ -116,6 +130,7 @@ private:
 private Q_SLOTS:
     void slotReadingChanged ();
     void readAlsData (int lux);
+    void slotLevelSettled ();
 };
 
 #endif /* AMBIENTLIGHTSENSOR_H */

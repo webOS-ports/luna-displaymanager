@@ -128,6 +128,8 @@ AmbientLightSensor::AmbientLightSensor ()
     , m_alsSum (0.0)
     , m_alsCountInRegion (0)
     , m_alsFastRate (false)
+    , m_pendingLevel (ALS_REGION_UNDEFINED)
+    , m_levelSeen (false)
 {
     LSError lserror;
     LSErrorInit(&lserror);
@@ -176,6 +178,10 @@ AmbientLightSensor::AmbientLightSensor ()
         LSErrorPrint (&lserror, stderr);
         LSErrorFree (&lserror);
     }
+
+    m_levelTimer.setSingleShot(true);
+    m_levelTimer.setInterval(ALS_LEVEL_SETTLE_MS);
+    connect(&m_levelTimer, SIGNAL(timeout()), this, SLOT(slotLevelSettled()));
 
     for (int i = 0; i < ALS_REGION_COUNT; i++) {
         m_alsBorder[i] = kAlsBorderLux[i];
@@ -288,6 +294,9 @@ void AmbientLightSensor::resetAlsSamples ()
     m_alsSampleCount = 0;
     m_alsSum = 0.0;
     m_alsCountInRegion = 0;
+
+    m_levelTimer.stop();
+    m_levelSeen = false;
 }
 
 /**
@@ -522,7 +531,16 @@ bool sortIncr (int32_t alsVal1, int32_t alsVal2)
     return true;
 }
 
-// this allows the als region to move directly to the current light condition.
+void AmbientLightSensor::slotLevelSettled ()
+{
+    /* The sensor may have been switched off or disabled while waiting. */
+    if (!m_alsIsOn || m_alsDisabled > 0 || !m_alsEnabled)
+        return;
+
+    setCurrentRegion(m_pendingLevel);
+}
+
+// this moves the als region to the current light condition once it has settled.
 
 bool AmbientLightSensor::updateAls(int lightLevel)
 {
@@ -563,8 +581,20 @@ bool AmbientLightSensor::updateAls(int lightLevel)
         setCurrentRegion(ALS_REGION_INDOOR);
     }
 
-    //FIXME: Is this really correct?
-    setCurrentRegion(lightLevel);
+    /* Qt's LightLevel buckets line up with the regions one for one
+     * (Undefined, Dark, Twilight, Light, Bright, Sunny). */
+    if (!m_levelSeen) {
+        m_levelSeen = true;
+        m_levelTimer.stop();
+        setCurrentRegion(lightLevel);
+    }
+    else if (lightLevel == m_alsRegion) {
+        m_levelTimer.stop();
+    }
+    else if (!m_levelTimer.isActive() || lightLevel != m_pendingLevel) {
+        m_pendingLevel = lightLevel;
+        m_levelTimer.start();
+    }
 
 end:
 
