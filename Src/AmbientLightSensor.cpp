@@ -212,11 +212,9 @@ AmbientLightSensor::AmbientLightSensor ()
          */
         connect(HostBase::instance(), SIGNAL(ambientLightReading(int)),
                 this, SLOT(readAlsData(int)));
-        g_warning("ALSDBG: using nyx ALS via HostBase::ambientLightReading");
     }
 
     if (!m_alsHandle) {
-        g_warning("ALSDBG: no nyx ALS, falling back to QAmbientLightSensor (LightLevel only)");
         m_als = new QAmbientLightSensor();
         connect(m_als, SIGNAL(readingChanged()), this, SLOT(slotReadingChanged()));
     }
@@ -260,7 +258,6 @@ void AmbientLightSensor::slotReadingChanged ()
 
 void AmbientLightSensor::readAlsData (int lux)
 {
-    g_warning("ALSDBG: reading lux=%d", lux);
     updateAlsLux((qreal) lux);
 }
 
@@ -277,9 +274,8 @@ void AmbientLightSensor::setAlsSampleRate (bool fast)
     m_alsFastRate = fast;
 
     if (m_alsHandle) {
-        nyx_error_t error = nyx_device_set_report_rate(m_alsHandle,
-                                fast ? NYX_REPORT_RATE_HIGH : NYX_REPORT_RATE_LOW);
-        g_warning("ALSDBG: report rate -> %s (err %d)", fast ? "HIGH" : "LOW", (int) error);
+        nyx_device_set_report_rate(m_alsHandle,
+                                   fast ? NYX_REPORT_RATE_HIGH : NYX_REPORT_RATE_LOW);
     }
 }
 
@@ -306,7 +302,6 @@ void AmbientLightSensor::resetAlsSamples ()
 bool AmbientLightSensor::updateAlsLux (qreal lux)
 {
     if (Settings::LunaSettings()->hardwareType != Settings::HardwareTypeDevice) {
-        g_warning("ALSDBG: updateAlsLux bail - not a device");
         return false;
     }
 
@@ -316,7 +311,6 @@ bool AmbientLightSensor::updateAlsLux (qreal lux)
     }
 
     if (m_alsDisabled > 0 || !m_alsEnabled) {
-        g_warning("ALSDBG: updateAlsLux bail - disabled=%d enabled=%d", (int) m_alsDisabled, (int) m_alsEnabled);
         setCurrentRegion(ALS_REGION_UNDEFINED);
         return false;
     }
@@ -380,11 +374,6 @@ bool AmbientLightSensor::updateAlsLux (qreal lux)
         ++region;
     }
 
-    g_warning("ALSDBG: lux=%.3f cal=%.1f -> %.2f  mean=%.2f n=%d  region %d -> %d  inBand=%d fast=%d",
-              lux / (Settings::LunaSettings()->alsCalibration > 0 ? Settings::LunaSettings()->alsCalibration : 1.0),
-              Settings::LunaSettings()->alsCalibration, lux, mean, m_alsSampleCount,
-              m_alsRegion, region, (int) inBand, (int) m_alsFastRate);
-
     setCurrentRegion(region);
 
     if (m_alsSubscriptions > 0) {
@@ -434,12 +423,7 @@ bool AmbientLightSensor::stop ()
 
 bool AmbientLightSensor::on ()
 {
-    g_warning("ALSDBG: on() entered - hwType=%d displayOn=%d isOn=%d enabled=%d disabled=%d nyxHandle=%p",
-              (int) Settings::LunaSettings()->hardwareType, (int) m_alsDisplayOn,
-              (int) m_alsIsOn, (int) m_alsEnabled, (int) m_alsDisabled, (void*) m_alsHandle);
-
     if (Settings::LunaSettings()->hardwareType != Settings::HardwareTypeDevice) {
-        g_warning("ALSDBG: on() -> not a device, bail");
         return true;
     }
 
@@ -450,20 +434,17 @@ bool AmbientLightSensor::on ()
     // if display is off do not bother to enable the 
     // als sensor
     if (!m_alsDisplayOn) {
-        g_warning("ALSDBG: on() -> display is off, bail");
         return true;
     }
 
     // if it is already one do not bother to enable it
     if (m_alsIsOn) {
-        g_warning("ALSDBG: on() -> already on, bail");
         return true;
     }
 
     // if we are not calibrated and there are no subscriptions
     // do not enable it
     if (!m_alsEnabled) {
-        g_warning("ALSDBG: on() -> ALS not enabled, bail");
         return true;
     }
 
@@ -478,7 +459,6 @@ bool AmbientLightSensor::on ()
     if (m_alsHandle)
     {
         nyx_error_t error = nyx_device_set_operating_mode(m_alsHandle, NYX_OPERATING_MODE_ON);
-        g_warning("ALSDBG: nyx ALS operating mode ON (err %d)", (int) error);
         return (error == NYX_ERROR_NONE || error == NYX_ERROR_NOT_IMPLEMENTED);
     }
 
@@ -516,8 +496,7 @@ bool AmbientLightSensor::off ()
 
     if (m_alsHandle)
     {
-        nyx_error_t error = nyx_device_set_operating_mode(m_alsHandle, NYX_OPERATING_MODE_OFF);
-        g_warning("ALSDBG: nyx ALS operating mode OFF (err %d)", (int) error);
+        nyx_device_set_operating_mode(m_alsHandle, NYX_OPERATING_MODE_OFF);
     }
 
     if (NULL != m_als)
