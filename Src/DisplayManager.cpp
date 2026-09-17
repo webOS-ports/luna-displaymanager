@@ -2328,6 +2328,10 @@ int32_t DisplayManager::getDisplayBrightness()
     if (Preferences::instance()->isAlsEnabled()) {
         int region = m_als->getCurrentRegion ();
 
+        // No reading yet: start dim and let the first reading raise it.
+        if (m_als->awaitingReading ())
+            region = ALS_REGION_DARK;
+
         switch (region)
         {
         case ALS_REGION_OUTDOOR:

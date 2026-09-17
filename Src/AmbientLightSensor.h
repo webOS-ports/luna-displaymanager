@@ -44,6 +44,10 @@
 /* How long a new Qt LightLevel has to hold before the region follows it. */
 #define ALS_LEVEL_SETTLE_MS    1000
 
+/* How long to wait for the first reading after the sensor is switched on
+ * before assuming indoor light. */
+#define ALS_FIRST_READING_MS   2000
+
 
 #define ALS_REGION_UNDEFINED  0
 #define ALS_REGION_DARK       1
@@ -65,6 +69,7 @@ public:
 
     bool update (int intensity);
     int getCurrentRegion ();
+    bool awaitingReading () const;
     void setCurrentRegion (int newRegion);
 
     bool start ();
@@ -117,6 +122,17 @@ private:
     int32_t                m_pendingLevel;
     bool                   m_levelSeen;
 
+    /* Between switching the sensor on and its first reading there is no
+     * estimate, only the INDOOR preset, which is the full brightness setting.
+     * On the MP01 that lit the frontlight at 40% for the ~100 ms until the
+     * first reading said DARK. While this is set DisplayManager treats the
+     * light as DARK instead - a dim start that rises once a reading says so,
+     * rather than a bright one that drops. m_firstReadingTimer gives up after
+     * ALS_FIRST_READING_MS and settles on INDOOR, so a sensor that never
+     * reports does not leave the display dim. */
+    bool                   m_awaitingReading;
+    QTimer                 m_firstReadingTimer;
+
     static AmbientLightSensor * m_instance;
 
     bool on();
@@ -126,11 +142,13 @@ private:
     bool updateAlsLux (qreal lux);
     void resetAlsSamples ();
     void setAlsSampleRate (bool fast);
+    void regionEstimated (int region);
 
 private Q_SLOTS:
     void slotReadingChanged ();
     void readAlsData (int lux);
     void slotLevelSettled ();
+    void slotFirstReadingTimeout ();
 };
 
 #endif /* AMBIENTLIGHTSENSOR_H */

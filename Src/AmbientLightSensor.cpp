@@ -130,6 +130,7 @@ AmbientLightSensor::AmbientLightSensor ()
     , m_alsFastRate (false)
     , m_pendingLevel (ALS_REGION_UNDEFINED)
     , m_levelSeen (false)
+    , m_awaitingReading (true)
 {
     LSError lserror;
     LSErrorInit(&lserror);
@@ -183,6 +184,10 @@ AmbientLightSensor::AmbientLightSensor ()
     m_levelTimer.setInterval(ALS_LEVEL_SETTLE_MS);
     connect(&m_levelTimer, SIGNAL(timeout()), this, SLOT(slotLevelSettled()));
 
+    m_firstReadingTimer.setSingleShot(true);
+    m_firstReadingTimer.setInterval(ALS_FIRST_READING_MS);
+    connect(&m_firstReadingTimer, SIGNAL(timeout()), this, SLOT(slotFirstReadingTimeout()));
+
     for (int i = 0; i < ALS_REGION_COUNT; i++) {
         m_alsBorder[i] = kAlsBorderLux[i];
         m_alsMargin[i] = kAlsMarginLux[i];
@@ -191,6 +196,10 @@ AmbientLightSensor::AmbientLightSensor ()
 
     if (Settings::LunaSettings()->enableAls) {
     m_alsEnabled = true;
+
+    /* DisplayManager lights the display before it starts the sensor; covers
+     * that gap, and gives up if the sensor is never started at all. */
+    m_firstReadingTimer.start();
 
     /*
      * Prefer nyx. The region estimation needs a magnitude in lux, and the Qt
@@ -383,7 +392,7 @@ bool AmbientLightSensor::updateAlsLux (qreal lux)
         ++region;
     }
 
-    setCurrentRegion(region);
+    regionEstimated(region);
 
     if (m_alsSubscriptions > 0) {
         LSError lserror;
@@ -408,6 +417,27 @@ bool AmbientLightSensor::updateAlsLux (qreal lux)
 int AmbientLightSensor::getCurrentRegion ()
 {
     return m_alsRegion;
+}
+
+bool AmbientLightSensor::awaitingReading () const
+{
+    return m_awaitingReading && m_alsEnabled && m_alsDisabled == 0;
+}
+
+/* A real estimate has arrived. Ending the wait changes the brightness even when
+ * the region does not - the INDOOR preset confirmed as INDOOR - so tell
+ * DisplayManager either way. */
+void AmbientLightSensor::regionEstimated (int region)
+{
+    bool wasAwaiting = m_awaitingReading;
+
+    m_awaitingReading = false;
+    m_firstReadingTimer.stop();
+
+    if (region != m_alsRegion)
+        setCurrentRegion(region);
+    else if (wasAwaiting)
+        Q_EMIT currentRegionChanged(m_alsRegion);
 }
 
 void AmbientLightSensor::setCurrentRegion (int newRegion)
@@ -464,6 +494,9 @@ bool AmbientLightSensor::on ()
     setCurrentRegion(ALS_REGION_INDOOR);
 
     resetAlsSamples();
+
+    m_awaitingReading = true;
+    m_firstReadingTimer.start();
 
     if (m_alsHandle)
     {
@@ -537,7 +570,25 @@ void AmbientLightSensor::slotLevelSettled ()
     if (!m_alsIsOn || m_alsDisabled > 0 || !m_alsEnabled)
         return;
 
-    setCurrentRegion(m_pendingLevel);
+    regionEstimated(m_pendingLevel);
+}
+
+void AmbientLightSensor::slotFirstReadingTimeout ()
+{
+    if (!m_awaitingReading)
+        return;
+
+    /* Never switched on (DisplayManager can keep the sensor off): stop
+     * waiting for a reading that will not come and use the setting as is. */
+    if (!m_alsIsOn || m_alsDisabled > 0 || !m_alsEnabled) {
+        m_awaitingReading = false;
+        Q_EMIT currentRegionChanged(m_alsRegion);
+        return;
+    }
+
+    g_message("%s: no reading within %d ms, assuming indoor light",
+              __PRETTY_FUNCTION__, ALS_FIRST_READING_MS);
+    regionEstimated(ALS_REGION_INDOOR);
 }
 
 // this moves the als region to the current light condition once it has settled.
@@ -586,7 +637,7 @@ bool AmbientLightSensor::updateAls(int lightLevel)
     if (!m_levelSeen) {
         m_levelSeen = true;
         m_levelTimer.stop();
-        setCurrentRegion(lightLevel);
+        regionEstimated(lightLevel);
     }
     else if (lightLevel == m_alsRegion) {
         m_levelTimer.stop();
