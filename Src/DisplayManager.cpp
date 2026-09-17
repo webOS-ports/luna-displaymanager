@@ -4245,6 +4245,132 @@ bool DisplayManager::allowSuspend()
 }
 
 
+/* Driver names the power key's interrupt and device go by. gpio-keys covers
+ * the power button on most boards; a PMIC's own power key shows up under its
+ * own name - "pwrkey" on Rockchip and Qualcomm, "mtk-pmic-keys" on MediaTek. */
+static bool isPowerKeyName(const char *name)
+{
+    return strstr(name, "gpio-keys") != NULL ||
+           strstr(name, "pwrkey") != NULL ||
+           strstr(name, "pmic-keys") != NULL;
+}
+
+/**
+ * @brief Is the power key the only thing this board is armed to wake on?
+ */
+static bool onlyPowerKeyCanWake()
+{
+    static const char *dirs[] = {
+        "/sys/devices/platform",
+        NULL
+    };
+
+    int armed = 0;
+    int armedPowerKey = 0;
+
+    for (int d = 0; dirs[d]; d++) {
+        GDir *dir = g_dir_open(dirs[d], 0, NULL);
+
+        if (!dir)
+            continue;
+
+        const gchar *name;
+
+        while ((name = g_dir_read_name(dir)) != NULL) {
+            gchar *path = g_build_filename(dirs[d], name, "power", "wakeup", NULL);
+            gchar *value = NULL;
+
+            if (g_file_get_contents(path, &value, NULL, NULL)) {
+                if (g_str_has_prefix(g_strstrip(value), "enabled")) {
+                    armed++;
+
+                    if (isPowerKeyName(name))
+                        armedPowerKey++;
+                }
+
+                g_free(value);
+            }
+
+            g_free(path);
+        }
+
+        g_dir_close(dir);
+    }
+
+    return armed > 0 && armed == armedPowerKey;
+}
+
+/**
+ * @brief Did the power key bring the device out of suspend?
+ *
+ * The press that wakes the SoC is consumed as the wakeup interrupt and never
+ * reaches userspace: measured on a PinePhone Pro, the kernel logged "PM:
+ * suspend exit" and the first key event arrived three seconds later, from a
+ * second press. A short tap therefore appeared to do nothing, and the device
+ * only woke if the key was still held when the input subsystem came back.
+ *
+ * So the key event cannot be what decides whether to light the display. Ask
+ * the kernel instead which interrupt woke it, and resolve that number to the
+ * driver that owns it. Matching on the name rather than a fixed number keeps
+ * this working on any board - the IRQ number for the same button differs
+ * between devices and between kernels.
+ */
+bool DisplayManager::wokeOnPowerKey()
+{
+    gchar *irqStr = NULL;
+    int irq = 0;
+
+    if (g_file_get_contents("/sys/power/pm_wakeup_irq", &irqStr, NULL, NULL)) {
+        irq = atoi(irqStr);
+        g_free(irqStr);
+    }
+
+    if (irq <= 0) {
+        /*
+         * Not every kernel accounts for what woke it. On a PinePhone Pro
+         * (rk3399) pm_wakeup_irq reads back empty and every wakeup_count in
+         * /sys/kernel/debug/wakeup_sources stays at zero, even across a
+         * resume the power key demonstrably caused.
+         *
+         * Fall back on what the board was armed to wake on. If the only
+         * device permitted to wake it is the power key then the power key is
+         * what woke it, and the press is lost either way. A board that also
+         * arms an RTC or the modem gets no answer here rather than a wrong
+         * one, and behaves as before.
+         */
+        return onlyPowerKeyCanWake();
+    }
+
+    gchar *interrupts = NULL;
+
+    if (!g_file_get_contents("/proc/interrupts", &interrupts, NULL, NULL))
+        return false;
+
+    bool isPowerKey = false;
+    gchar **lines = g_strsplit(interrupts, "\n", -1);
+
+    for (int i = 0; lines && lines[i]; i++) {
+        gchar *colon = strchr(lines[i], ':');
+
+        if (!colon)
+            continue;
+
+        *colon = '\0';
+
+        if (atoi(g_strstrip(lines[i])) != irq)
+            continue;
+
+        /* The tail of the line is the driver name the IRQ was requested with. */
+        isPowerKey = isPowerKeyName(colon + 1);
+        break;
+    }
+
+    g_strfreev(lines);
+    g_free(interrupts);
+
+    return isPowerKey;
+}
+
 void DisplayManager::setSuspended (bool suspended) {
 
     if (suspended)
