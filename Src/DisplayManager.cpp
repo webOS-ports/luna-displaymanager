@@ -44,6 +44,8 @@
 #include <glib.h>
 #include <luna-service2/lunaservice.h>
 
+#include <algorithm>
+
 #if defined(HAS_LUNA_PREF)
 #include <lunaprefs.h>
 #endif
@@ -78,6 +80,8 @@
 
 #define URI_DISPLAY_POWER_KEY_SIGNAL "palm://com.palm.display/com/palm/display/powerKeyPressed"
 #define JSON_DISPLAY_POWER_KEY_SIGNAL "{\"showDialog\":true}"
+
+#define WATCHDOG_MIN_PERIOD_MS 5000
 
 #define DEFAULT_TIMEOUT          120
 #define DEFAULT_BRIGHTNESS       40
@@ -206,6 +210,7 @@ DisplayManager::DisplayManager()
     , m_power(new Timer<DisplayManager>(HostBase::instance()->masterTimer(), this, &DisplayManager::power))
     , m_slider(new Timer<DisplayManager>(HostBase::instance()->masterTimer(), this, &DisplayManager::slider))
     , m_alertTimer(new Timer<DisplayManager>(HostBase::instance()->masterTimer(), this, &DisplayManager::alertTimerCallback))
+    , m_watchdog(new Timer<DisplayManager>(HostBase::instance()->masterTimer(), this, &DisplayManager::inactivityWatchdog))
     , m_maxBrightness(DEFAULT_BRIGHTNESS)
     , m_currentState (NULL)
     , m_displayStates (NULL)
@@ -444,6 +449,7 @@ DisplayManager::DisplayManager()
 
     m_currentState->enter(DisplayStateOff, DisplayEventApiOn, NULL); // initializing state
     m_activity->start (m_activityTimeout);
+    m_watchdog->start (watchdogPeriod());
 }
 
 DisplayManager* DisplayManager::instance (void)
@@ -614,9 +620,10 @@ bool DisplayManager::pushDNAST(const char *id)
 
     m_dnast++;
 
-    if (!m_powerdOnline)
-        return true;
-
+    // Note: the display policy must not depend on sleepd being on the bus.
+    // An earlier version skipped the timer handling below while sleepd
+    // was offline, which left the state's single-shot timer stopped (or
+    // running) out of step with the DNAST count.
     g_debug ("%s: push (%i)", __FUNCTION__, m_dnast);
 
     if (m_dnast == 1)
@@ -645,9 +652,6 @@ bool DisplayManager::popDNAST(const char *id)
     }
 
     m_dnast--;
-
-    if (!m_powerdOnline)
-        return true;
 
     g_debug ("%s: pop (%i)", __FUNCTION__, m_dnast);
 
@@ -834,6 +838,7 @@ bool DisplayManager::proximityOn ()
                 return false;
         }
         m_proximityEnabled = true;
+        rearmInactivityTimer ();
     }
 
     return true;
@@ -856,6 +861,7 @@ bool DisplayManager::proximityOff ()
         }
         m_proximityEnabled = false;
         m_proximityActivated = false;
+        rearmInactivityTimer ();
     }
 
     return true;
@@ -915,6 +921,7 @@ bool DisplayManager::audiodCallback(LSHandle *sh, LSMessage *message, void *ctx)
                 // update the display ALS state
                 dm->updateState (DISPLAY_EVENT_ALS_REGION_CHANGED);
             }
+            dm->rearmInactivityTimer ();
         }
     }
 
@@ -1141,6 +1148,7 @@ bool DisplayManager::usbDockCallback(LSHandle *sh, LSMessage *message, void *ctx
 
     dm->m_chargerConnected = newState;
     dm->updateChargerDNAST ();
+    dm->rearmInactivityTimer ();
     dm->updateBrightness ();
 
 error:
@@ -1264,6 +1272,7 @@ apply:
         dm->updateState (event);
 
     dm->updateChargerDNAST ();
+    dm->rearmInactivityTimer ();
     dm->updateBrightness ();
 
 error:
@@ -1442,6 +1451,7 @@ bool DisplayManager::controlCallStatus(LSHandle *sh, LSMessage *message, void *c
             dm->m_onCall = true;
             dm->m_lastEvent = Time::curTimeMs();
             dm->updateState (DISPLAY_EVENT_ON_CALL);
+            dm->rearmInactivityTimer ();
         }
         // check if the audio is on the front speaker and start proximity sensor
     }
@@ -1451,6 +1461,7 @@ bool DisplayManager::controlCallStatus(LSHandle *sh, LSMessage *message, void *c
             dm->m_onCall = false;
             dm->m_lastEvent = Time::curTimeMs();
             dm->updateState (DISPLAY_EVENT_OFF_CALL);
+            dm->rearmInactivityTimer ();
         }
         // if prox sensor was enabled, turn it off and turn display on
     }
@@ -1668,6 +1679,9 @@ bool DisplayManager::setTimeout (int timeoutInMs)
     notifySubscribers (DISPLAY_EVENT_TIMEOUTS);
 
     m_currentState->startInactivityTimer();
+    // the watchdog period follows the off timeout
+    if (m_watchdog)
+        m_watchdog->start (watchdogPeriod());
     return true;
 }
 
@@ -2672,6 +2686,11 @@ DisplayManager::~DisplayManager()
         delete m_alertTimer;
         m_alertTimer = NULL;
     }
+    if (m_watchdog) {
+        m_watchdog->stop();
+        delete m_watchdog;
+        m_watchdog = NULL;
+    }
 
     // Clean up AmbientLightSensor
     delete m_als;
@@ -2722,10 +2741,18 @@ void DisplayManager::markBootFinished(bool finished)
     if (finished) {
         // If boot was already finished before we have to deal with a restart of the
         // whole UI hére and therefore turning on the display
-        if (m_bootFinished)
+        if (m_bootFinished) {
             on();
-
-        m_bootFinished = true;
+        }
+        else {
+            m_bootFinished = true;
+            // Every state timeout bails out (single-shot, no re-arm) while
+            // boot is not finished, so whatever timer expired during boot
+            // is gone by now. Re-arm the active state's timer so the
+            // display cannot stay on forever after a slow boot.
+            g_message ("%s: boot finished, re-arming inactivity timer", __PRETTY_FUNCTION__);
+            m_currentState->startInactivityTimer();
+        }
         // Update compass with correct lat/long
         requestCurrentLocation();
     }
@@ -2919,6 +2946,50 @@ bool DisplayManager::activity()
     }
 
     return false;
+}
+
+// Re-arm the current state's inactivity timer after one of its inputs
+// (charger, call/proximity, DNAST, boot state) changed. States that have
+// no inactivity timer (Off, OffOnCall, DockMode, OffSuspended) only
+// refresh m_lastEvent, so this is safe to call from any state.
+void DisplayManager::rearmInactivityTimer()
+{
+    g_debug ("%s: state %d", __PRETTY_FUNCTION__, currentState());
+    m_currentState->startInactivityTimer();
+}
+
+int DisplayManager::watchdogPeriod() const
+{
+    // Half the off timeout so a lost timer costs at most one extra half
+    // period, but never busier than every 5 s.
+    return std::max (m_offTimeout / 2, WATCHDOG_MIN_PERIOD_MS);
+}
+
+// Inactivity watchdog.
+//
+// All state timers are single-shot: the timeout handlers return false and
+// only re-arm the timer themselves while there is idle time left. A number
+// of paths let the expiry slip through without a re-arm (timeout while
+// boot was not finished, DNAST push/pop races, a call or charger flag that
+// changed under a running timer, a preference change, ...). Once that
+// happens nothing ever brings the display to Dim/Off again and sleepd
+// never sees "off".
+//
+// Instead of chasing every such path, this periodic timer (period
+// watchdogPeriod(), i.e. max(offTimeout/2, 5 s)) asks the current state to
+// check its own timer. A state that has an inactivity timer and finds it
+// NOT running while it should be calls its own timeout handler, which
+// compares now against m_lastEvent + the state's timeout: either it
+// re-arms the timer for the remaining idle time or it performs the
+// overdue transition (On -> Dim, Dim/OnLocked -> Off, OnPuck -> DockMode)
+// right away. States without a timer, DNAST, and "boot not finished" are
+// no-ops here, exactly as they are for the real timers.
+bool DisplayManager::inactivityWatchdog()
+{
+    if (m_bootFinished && !isDNAST())
+        m_currentState->checkInactivityTimer();
+
+    return true; // periodic
 }
 
 bool DisplayManager::slider()

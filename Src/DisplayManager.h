@@ -155,6 +155,7 @@ public:
     bool pushDNAST (const char *id);
     bool popDNAST (const char *id);
     void updateChargerDNAST ();
+    void rearmInactivityTimer ();
     bool updateState (int eventType);
     bool cancelLockTimer();
     void setActiveTouchpanel (bool enable);
@@ -265,6 +266,7 @@ private:
     Timer<DisplayManager>* m_power;
     Timer<DisplayManager>* m_slider;
     Timer<DisplayManager>* m_alertTimer;
+    Timer<DisplayManager>* m_watchdog;
     int32_t                m_maxBrightness;
 
     std::string        m_puckId;
@@ -290,6 +292,8 @@ private:
 
     bool timeout();
     bool activity();
+    bool inactivityWatchdog();
+    int  watchdogPeriod() const;
     bool power();
     bool slider();
     bool alertTimerCallback();
