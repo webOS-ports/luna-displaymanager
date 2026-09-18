@@ -167,6 +167,7 @@ DisplayManager::DisplayManager()
     , m_chargerConnected(CHARGER_NONE)
     , m_batteryL(100)
     , m_onWhenConnected(false)
+    , m_chargerDNASTHeld(false)
     , m_drop_key(false)
     , m_drop_pen(false)
     , m_allow_move(false)
@@ -512,9 +513,33 @@ bool DisplayManager::isDNAST() const
     return m_dnast > 0;
 }
 
+// "On the puck" means docked on an inductive charger (Touchstone-style
+// dock): that is what DockMode / OnPuck exist for. A plain USB (or wall)
+// charger is NOT a dock: the display follows the normal dim/off timeouts
+// while charging, unless the user opted into "onWhenConnected".
 bool DisplayManager::isOnPuck() const
 {
-    return (m_chargerConnected != CHARGER_NONE);
+    return (m_chargerConnected & CHARGER_INDUCTIVE) ? true : false;
+}
+
+// "Stay on while charging" (preference onWhenConnected) is implemented as
+// one DNAST hold that mirrors "preference set AND any charger present".
+// Deriving it from the current state instead of pushing/popping on
+// individual connect/disconnect events keeps the hold balanced when the
+// two charger signals (chargerStatus and USBDockStatus) report the same
+// change, or when the preference is toggled while charging.
+void DisplayManager::updateChargerDNAST()
+{
+    bool want = m_onWhenConnected && (m_chargerConnected != CHARGER_NONE);
+
+    if (want == m_chargerDNASTHeld)
+        return;
+
+    m_chargerDNASTHeld = want;
+    if (want)
+        pushDNAST ("dm-on-when-connected");
+    else
+        popDNAST ("dm-on-when-connected");
 }
 
 bool DisplayManager::isDisplayOn() const
@@ -1115,6 +1140,7 @@ bool DisplayManager::usbDockCallback(LSHandle *sh, LSMessage *message, void *ctx
     }
 
     dm->m_chargerConnected = newState;
+    dm->updateChargerDNAST ();
     dm->updateBrightness ();
 
 error:
@@ -1219,6 +1245,7 @@ bool DisplayManager::chargerCallback(LSHandle *sh, LSMessage *message, void *ctx
     if (DISPLAY_EVENT_NONE != event)
         dm->updateState (event);
 
+    dm->updateChargerDNAST ();
     dm->updateBrightness ();
 
 error:
@@ -1818,7 +1845,7 @@ Set display properties.
 \param client Client ID.
 \param powerKeyBlock Block the power key. Requires \e client parameter to be set.
 \param timeout Timeout in seconds for the display to turn off.
-\param onWhenConnected Should the display remain on when a USB cable is connected to the device.
+\param onWhenConnected Should the display remain on while any charger (USB, wall or dock) is connected to the device.
 \param maximumBrightness Display maximum brightness.
 \param proximityEnabled Toggle proximity sensor. Requires \e client parameter to be set.
 
@@ -1978,18 +2005,9 @@ bool DisplayManager::controlSetProperty(LSHandle *sh, LSMessage *message, void *
         if (dm->m_onWhenConnected != onWhenConnected)
         {
             dm->m_onWhenConnected = onWhenConnected;
-            // if the usb is connected and since value is changing
-            // make sure that we block transition changes
-            // and note with an id why we do block the state changes.
-            if (CHARGER_USB & dm->m_chargerConnected)
-            {
-                gchar *report = g_strdup_printf ("%s-dm-usb-charger-connected", __FUNCTION__);
-                if (dm->m_onWhenConnected)
-                    dm->pushDNAST (report);
-                else
-                    dm->popDNAST (report);
-                g_free (report);
-            }
+            // apply (or drop) the "stay on while charging" hold right away
+            // if a charger is currently connected
+            dm->updateChargerDNAST ();
         }
     }
     else
@@ -2794,23 +2812,11 @@ bool DisplayManager::updateState (int eventType)
             break;
         case DISPLAY_EVENT_USB_CHARGER_DISCONNECTED:
             {
-                if (m_onWhenConnected)
-                {
-                    gchar *report = g_strdup_printf ("%s-dm-usb-charger-connected", __FUNCTION__);
-                    popDNAST (report);
-                    g_free (report);
-                }
                 m_currentState->handleEvent (DisplayEventUsbOut);
             }
             break;
         case DISPLAY_EVENT_USB_CHARGER_CONNECTED:
             {
-                if (m_onWhenConnected)
-                {
-                    gchar *report = g_strdup_printf ("%s-dm-usb-charger-connected", __FUNCTION__);
-                    pushDNAST (report);
-                    g_free (report);
-                }
                 m_currentState->handleEvent (DisplayEventUsbIn);
             }
             break;

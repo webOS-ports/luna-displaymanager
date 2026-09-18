@@ -154,6 +154,7 @@ public:
 
     bool pushDNAST (const char *id);
     bool popDNAST (const char *id);
+    void updateChargerDNAST ();
     bool updateState (int eventType);
     bool cancelLockTimer();
     void setActiveTouchpanel (bool enable);
@@ -216,6 +217,7 @@ private:
     int32_t                m_batteryL;
 
     bool                   m_onWhenConnected;
+    bool                   m_chargerDNASTHeld;
     bool                   m_drop_key;
     bool                   m_drop_pen;
     bool                   m_allow_move;
