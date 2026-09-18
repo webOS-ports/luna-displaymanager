@@ -329,6 +329,13 @@ DisplayManager::DisplayManager()
         LSErrorFree (&lserror);
     }
 
+    result = LSRegisterServerStatusEx(m_service, "com.webos.service.battery", DisplayManager::batteryServiceNotification, this, NULL, &lserror);
+    if (!result)
+    {
+        LSErrorPrint(&lserror, stderr);
+        LSErrorFree(&lserror);
+    }
+
     result = LSRegisterServerStatusEx(m_service, "org.webosports.bootmgr", DisplayManager::bootMgrServiceNotification, this, NULL, &lserror);
     if (!result)
     {
@@ -666,37 +673,64 @@ bool DisplayManager::popDNAST(const char *id)
 }
 
 
-bool DisplayManager::powerdServiceNotification(LSHandle *sh, const char *serviceName, bool connected, void *ctx)
+// Ask batteryd (com.webos.service.battery) for the current charger, dock
+// and battery state. batteryd answers the *Query signals with its regular
+// chargerStatus / USBDockStatus / batteryStatus signals, which land in the
+// callbacks registered in the constructor.
+void DisplayManager::requestPowerStatus(LSHandle *sh)
 {
     LSError lserror;
     LSErrorInit(&lserror);
-    bool result = true;
+    bool result;
 
+    result = LSSignalSend(sh, URI_CHARGER_SIGNAL_REQUEST, JSON_SIGNAL_REQUEST, &lserror);
+    if (!result)
+    {
+        LSErrorPrint (&lserror, stderr);
+        LSErrorFree (&lserror);
+    }
+
+    result = LSSignalSend(sh, URI_USBDOCK_SIGNAL_REQUEST, JSON_SIGNAL_REQUEST, &lserror);
+    if (!result)
+    {
+        LSErrorPrint (&lserror, stderr);
+        LSErrorFree (&lserror);
+    }
+
+    result = LSSignalSend(sh, URI_POWERD_BATTERY_SIGNAL_REQUEST, JSON_SIGNAL_REQUEST, &lserror);
+    if (!result)
+    {
+        LSErrorPrint (&lserror, stderr);
+        LSErrorFree (&lserror);
+    }
+}
+
+// The charger state is owned by batteryd, not by sleepd: query it whenever
+// batteryd (re)appears on the bus, so the display manager knows about a
+// charger plugged in before it started even if sleepd is late or absent.
+bool DisplayManager::batteryServiceNotification(LSHandle *sh, const char *serviceName, bool connected, void *ctx)
+{
+    DisplayManager *dm = (DisplayManager *)ctx;
+
+    if (connected)
+    {
+        g_message ("%s: %s is up, querying charger and battery state", __PRETTY_FUNCTION__, serviceName);
+        dm->requestPowerStatus (sh);
+    }
+
+    return true;
+}
+
+bool DisplayManager::powerdServiceNotification(LSHandle *sh, const char *serviceName, bool connected, void *ctx)
+{
     DisplayManager *dm = (DisplayManager *)ctx;
     dm->m_powerdOnline = connected;
 
     if (connected)
     {
-        result = LSSignalSend(sh, URI_CHARGER_SIGNAL_REQUEST, JSON_SIGNAL_REQUEST, &lserror);
-        if (!result)
-        {
-            LSErrorPrint (&lserror, stderr);
-            LSErrorFree (&lserror);
-        }
-
-        result = LSSignalSend(sh, URI_USBDOCK_SIGNAL_REQUEST, JSON_SIGNAL_REQUEST, &lserror);
-        if (!result)
-        {
-            LSErrorPrint (&lserror, stderr);
-            LSErrorFree (&lserror);
-        }
-
-        result = LSSignalSend(sh, URI_POWERD_BATTERY_SIGNAL_REQUEST, JSON_SIGNAL_REQUEST, &lserror);
-        if (!result)
-        {
-            LSErrorPrint (&lserror, stderr);
-            LSErrorFree (&lserror);
-        }
+        // Kept for parity with the old powerd contract; batteryd is the
+        // service that actually answers (see batteryServiceNotification).
+        dm->requestPowerStatus (sh);
 
         dm->m_lastEvent = Time::curTimeMs();
         g_message ("%s: calling on()", __PRETTY_FUNCTION__);

@@ -120,6 +120,7 @@ public:
 
     // service notifications for services used
     static bool powerdServiceNotification(LSHandle *sh, const char *serviceName, bool connected, void *ctx);
+    static bool batteryServiceNotification(LSHandle *sh, const char *serviceName, bool connected, void *ctx);
     static bool telephonyServiceNotification(LSHandle *sh, const char *serviceName, bool connected, void *ctx);
     static bool audiodServiceNotification(LSHandle *sh, const char *serviceName, bool connected, void *ctx);
     static bool keysServiceNotification(LSHandle *sh, const char *serviceName, bool connected, void *ctx);
@@ -155,6 +156,7 @@ public:
     bool pushDNAST (const char *id);
     bool popDNAST (const char *id);
     void updateChargerDNAST ();
+    void requestPowerStatus (LSHandle *sh);
     void rearmInactivityTimer ();
     bool updateState (int eventType);
     bool cancelLockTimer();
