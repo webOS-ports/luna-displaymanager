@@ -580,9 +580,16 @@ int DisplayManager::offTimeout() const
     return m_offTimeout;
 }
 
+// Timeout used by OnLocked (lock screen showing) and by On when it was
+// entered through the setState "on" API rather than by user input. Its
+// base value is LockScreenTimeout from luna.conf (60 s by default), which
+// is longer than a short "timeout" preference: with timeout=20 the
+// unlocked screen would go off after 20 s but the lock screen only after
+// 60 s. The user's preference is the upper bound for any screen-on time,
+// so never exceed it here.
 int DisplayManager::lockedOffTimeout() const
 {
-    return m_lockedOffTimeout;
+    return std::min (m_lockedOffTimeout, m_totalTimeout);
 }
 
 int DisplayManager::lastEvent() const
