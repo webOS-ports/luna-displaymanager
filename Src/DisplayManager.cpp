@@ -1188,6 +1188,23 @@ bool DisplayManager::chargerCallback(LSHandle *sh, LSMessage *message, void *ctx
     {
         usb = false;
     }
+    else if (0 == strcmp (json_object_get_string(label), "none"))
+    {
+        // batteryd derives "type" from what powers the device right now,
+        // so every disconnect arrives as type "none" / connected false.
+        // Treat that as "no charger at all" instead of ignoring it, so the
+        // charger bits cannot go stale if the USBDockStatus signal is lost.
+        label = json_object_object_get(root, "connected");
+        if (!label || json_object_get_boolean(label))
+            goto error;
+
+        newState = CHARGER_NONE;
+        if (dm->m_chargerConnected & CHARGER_INDUCTIVE)
+            event = DISPLAY_EVENT_INDUCTIVE_CHARGER_DISCONNECTED;
+        else if (dm->m_chargerConnected & CHARGER_USB)
+            event = DISPLAY_EVENT_USB_CHARGER_DISCONNECTED;
+        goto apply;
+    }
     else
     {
         goto error;
@@ -1240,6 +1257,7 @@ bool DisplayManager::chargerCallback(LSHandle *sh, LSMessage *message, void *ctx
         }
     }
 
+apply:
     dm->m_chargerConnected = newState;
 
     if (DISPLAY_EVENT_NONE != event)
