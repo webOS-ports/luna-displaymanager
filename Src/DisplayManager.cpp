@@ -2466,9 +2466,21 @@ bool DisplayManager::controlStatus(LSHandle *sh, LSMessage *message, void *ctx)
         subscribed = false;
     }
 
+    // "state" is what sleepd keys its suspend decision on ("off" lets the
+    // device suspend, "on"/"dimmed" keep it awake):
+    // - Off and OffSuspended are the only states where the display is off
+    //   with nothing keeping the device up; OffSuspended is Off with the
+    //   device already suspended, so it reports "off" too instead of
+    //   "undefined".
+    // - OffOnCall reports "on" on purpose: the panel is dark because the
+    //   proximity sensor is covered during a call, but the device must
+    //   stay awake for the call. allowSuspend() vetoes suspend in that
+    //   state as well.
+    // - DockMode and OnPuck are on (a docked device shows the dock UI).
     if (DisplayStateDim == dm->currentState())
         state = "dimmed";
-    else if (DisplayStateOff == dm->currentState())
+    else if (DisplayStateOff == dm->currentState()
+            || DisplayStateOffSuspended == dm->currentState())
         state = "off";
     else if (DisplayStateOn == dm->currentState()
             || DisplayStateOnLocked == dm->currentState()
