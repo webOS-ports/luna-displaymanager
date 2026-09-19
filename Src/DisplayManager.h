@@ -269,6 +269,7 @@ private:
     Timer<DisplayManager>* m_slider;
     Timer<DisplayManager>* m_alertTimer;
     Timer<DisplayManager>* m_watchdog;
+    Timer<DisplayManager>* m_bannerWakeTimer;
     int32_t                m_maxBrightness;
 
     std::string        m_puckId;
@@ -299,6 +300,8 @@ private:
     bool power();
     bool slider();
     bool alertTimerCallback();
+    bool bannerWakeCallback();
+    int  alertRestoreState() const;
     bool updateTimeout(int timeoutInMs);
     bool setTimeout (int timeout);
     bool notifySubscribers(int type, sptr<Event> event = 0);

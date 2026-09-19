@@ -2162,6 +2162,13 @@ void DisplayOffSuspended::handleEvent (DisplayEvent displayEvent, sptr<Event> ev
         break;
 
     case DisplayEventApiOff:
+        // off() while suspended (an alert/banner that lit us up was
+        // dismissed before the device resumed): cancel the pending
+        // restore-to-on so the resume brings the display back dark.
+        g_debug ("%s: public api off called, restoring to off on resume", __PRETTY_FUNCTION__);
+        m_restoreState = DisplayStateOff;
+        m_restoreDisplayEvent = DisplayEventPowerdResume;
+        m_restoreEvent = NULL;
         break;
 
     case DisplayEventUserActivity:

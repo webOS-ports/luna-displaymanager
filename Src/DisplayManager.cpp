@@ -101,6 +101,10 @@
 #define SLIDER_TIMEOUT 1500
 #define SLIDER_MINTIME 200
 #define ALERT_TIMEOUT  6000
+// A banner only lights an off display if it is still showing after this
+// long; luna-next-cardshell pulses banner-activated/deactivated within
+// ~70 ms for transient banners (e.g. "charger disconnected").
+#define BANNER_WAKE_DELAY_MS 250
 #define SLIDER_LOCK_TIMEOUT  2000
 #define TOUCHPANEL_DELAY 200
 #define DISPLAY_LOCK_TIMEOUT 2000
@@ -211,6 +215,7 @@ DisplayManager::DisplayManager()
     , m_slider(new Timer<DisplayManager>(HostBase::instance()->masterTimer(), this, &DisplayManager::slider))
     , m_alertTimer(new Timer<DisplayManager>(HostBase::instance()->masterTimer(), this, &DisplayManager::alertTimerCallback))
     , m_watchdog(new Timer<DisplayManager>(HostBase::instance()->masterTimer(), this, &DisplayManager::inactivityWatchdog))
+    , m_bannerWakeTimer(new Timer<DisplayManager>(HostBase::instance()->masterTimer(), this, &DisplayManager::bannerWakeCallback))
     , m_maxBrightness(DEFAULT_BRIGHTNESS)
     , m_currentState (NULL)
     , m_displayStates (NULL)
@@ -2744,6 +2749,11 @@ DisplayManager::~DisplayManager()
         delete m_watchdog;
         m_watchdog = NULL;
     }
+    if (m_bannerWakeTimer) {
+        m_bannerWakeTimer->stop();
+        delete m_bannerWakeTimer;
+        m_bannerWakeTimer = NULL;
+    }
 
     // Clean up AmbientLightSensor
     delete m_als;
@@ -3347,6 +3357,24 @@ bool DisplayManager::alertTimerCallback ()
     return false;
 }
 
+bool DisplayManager::bannerWakeCallback ()
+{
+    g_message ("%s: banner still active after %d ms, calling on()", __PRETTY_FUNCTION__, BANNER_WAKE_DELAY_MS);
+    on ();
+    return false;
+}
+
+// The state an alert/banner should hand the display back to once it is
+// gone. OffSuspended is Off with the device suspended underneath: reporting
+// it as Off makes the deactivate path call off(), which OffSuspended turns
+// into "restore Off on resume" instead of leaving the display lit.
+int DisplayManager::alertRestoreState () const
+{
+    if (currentState() == DisplayStateOffSuspended)
+        return DisplayStateOff;
+    return currentState();
+}
+
 void DisplayManager::handleDisplayEvent(DisplayEvent event)
 {
     m_currentState->handleEvent(event);
@@ -3359,13 +3387,26 @@ bool DisplayManager::alert (int state)
     {
         case DISPLAY_BANNER_ACTIVATED:
         case DISPLAY_ALERT_GENERIC_ACTIVATED:
-            m_alertState = currentState();
+            // Legacy behaviour: an alert or banner lights an off display and
+            // ALERT_TIMEOUT / the matching deactivate puts it back to the
+            // state it was in (m_alertState).
+            m_alertState = alertRestoreState();
             if (currentState() != DisplayStateOn
                     && currentState() != DisplayStateOnLocked
                     && currentState() != DisplayStateOnPuck
             && currentState() != DisplayStateDockMode)
             {
                 m_alertTimer->start (ALERT_TIMEOUT);
+                if (state == DISPLAY_BANNER_ACTIVATED)
+                {
+                    // Banners are often dismissed again within milliseconds
+                    // (cardshell pulses one for a charger disconnect); do
+                    // not flash the panel for those, only light it for a
+                    // banner that is still up after BANNER_WAKE_DELAY_MS.
+                    g_message ("%s: banner while display off, deferring on() by %d ms", __PRETTY_FUNCTION__, BANNER_WAKE_DELAY_MS);
+                    m_bannerWakeTimer->start (BANNER_WAKE_DELAY_MS);
+                    return true;
+                }
                 g_message ("%s: calling on due to alert %d", __PRETTY_FUNCTION__, state);
                 return on ();
             }
@@ -3396,6 +3437,8 @@ bool DisplayManager::alert (int state)
             break;
         case DISPLAY_ALERT_GENERIC_DEACTIVATED:
         case DISPLAY_BANNER_DEACTIVATED:
+            if (m_bannerWakeTimer->running ())
+                m_bannerWakeTimer->stop ();
             if (!m_onCall) {
                 if (m_alertState == DisplayStateOff) {
                     g_message ("%s: calling off due to alert %d", __PRETTY_FUNCTION__, state);
@@ -3411,6 +3454,8 @@ bool DisplayManager::alert (int state)
             m_alertState = DISPLAY_UNDEFINED;
             if (m_alertTimer->running ())
                 m_alertTimer->stop ();
+            if (m_bannerWakeTimer->running ())
+                m_bannerWakeTimer->stop ();
             break;
         default:
             break;
