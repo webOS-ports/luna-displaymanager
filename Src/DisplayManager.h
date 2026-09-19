@@ -289,6 +289,13 @@ private:
 
     bool m_powerKeyPressEventScheduled;
 
+    // What the compositor was last told about the panel (true = on) and the
+    // in-flight request, see updateCompositorDisplayState()
+    bool                   m_compositorDisplayOn;
+    bool                   m_compositorPendingOn;
+    LSMessageToken         m_compositorCallToken;
+    Timer<DisplayManager>* m_compositorTimer;
+
     bool off (sptr<Event> event = 0);
     bool on (sptr<Event> event = 0);
     bool dim (sptr<Event> event = 0);
@@ -349,7 +356,12 @@ private:
 
     void markBootFinished(bool finished);
 
-    void updateCompositorDisplayState(bool on, LSMethodFunction cb , void *context);
+    // panel power via the compositor (com.webos.surfacemanager/setDisplayState)
+    void updateCompositorDisplayState(bool on);
+    void compositorDisplayStateDone(bool on, bool confirmed);
+    bool compositorTimeout();
+    static bool compositorDisplayStateCallback(LSHandle *sh, LSMessage *message, void *ctx);
+    static bool compositorServiceNotification(LSHandle *sh, const char *serviceName, bool connected, void *ctx);
 
     static bool displayOnCallback(LSHandle *handle, LSMessage *message, gpointer context);
     static bool displayOffCallback(LSHandle *handle, LSMessage *message, gpointer context);

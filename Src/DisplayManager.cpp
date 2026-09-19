@@ -83,6 +83,11 @@
 
 #define WATCHDOG_MIN_PERIOD_MS 5000
 
+#define URI_COMPOSITOR_SET_DISPLAY_STATE "luna://com.webos.surfacemanager/setDisplayState"
+// Longest we wait for the compositor to confirm a panel power change
+// before carrying on (raising the backlight / allowing suspend) anyway.
+#define COMPOSITOR_REPLY_TIMEOUT_MS 500
+
 #define DEFAULT_TIMEOUT          120
 #define DEFAULT_BRIGHTNESS       40
 
@@ -224,6 +229,10 @@ DisplayManager::DisplayManager()
     , m_suspendBlocker(HostBase::instance()->mainLoop(),
                        this, &DisplayManager::allowSuspend, &DisplayManager::setSuspended)
     , m_powerKeyPressEventScheduled(false)
+    , m_compositorDisplayOn(true)
+    , m_compositorPendingOn(true)
+    , m_compositorCallToken(LSMESSAGE_TOKEN_INVALID)
+    , m_compositorTimer(new Timer<DisplayManager>(HostBase::instance()->masterTimer(), this, &DisplayManager::compositorTimeout))
 {
     GMainLoop* mainLoop = HostBase::instance()->mainLoop();
 
@@ -332,6 +341,13 @@ DisplayManager::DisplayManager()
     {
         LSErrorPrint (&lserror, stderr);
         LSErrorFree (&lserror);
+    }
+
+    result = LSRegisterServerStatusEx(m_service, "com.webos.surfacemanager", DisplayManager::compositorServiceNotification, this, NULL, &lserror);
+    if (!result)
+    {
+        LSErrorPrint(&lserror, stderr);
+        LSErrorFree(&lserror);
     }
 
     result = LSRegisterServerStatusEx(m_service, "com.webos.service.battery", DisplayManager::batteryServiceNotification, this, NULL, &lserror);
@@ -2754,6 +2770,11 @@ DisplayManager::~DisplayManager()
         delete m_bannerWakeTimer;
         m_bannerWakeTimer = NULL;
     }
+    if (m_compositorTimer) {
+        m_compositorTimer->stop();
+        delete m_compositorTimer;
+        m_compositorTimer = NULL;
+    }
 
     // Clean up AmbientLightSensor
     delete m_als;
@@ -3192,11 +3213,15 @@ void DisplayManager::backlightOff()
     changeVsyncControl(false);
 
     LedControl* lcKeypadAndDisplay = HostBase::instance()->getLedControlKeypadAndDisplay();
-    if (NULL == lcKeypadAndDisplay)
+    if (NULL == lcKeypadAndDisplay) {
         g_message("%s: LedControlKeypadAndDisplay returns NULL", __PRETTY_FUNCTION__);
+        // no backlight controller: treat the backlight as off right away so
+        // the panel still gets blanked and suspend is not vetoed forever
+        backlightOffCallback(this);
+        return;
+    }
 
-    if (lcKeypadAndDisplay)
-        lcKeypadAndDisplay->setBrightness(0, -1, &DisplayManager::backlightOffCallback, this);
+    lcKeypadAndDisplay->setBrightness(0, -1, &DisplayManager::backlightOffCallback, this);
 }
 
 void DisplayManager::backlightOffCallback (void *ctx)
@@ -3204,23 +3229,123 @@ void DisplayManager::backlightOffCallback (void *ctx)
     g_message("%s setting m_backlightIsOn to false", __PRETTY_FUNCTION__);
     DisplayManager *dm = (DisplayManager *)ctx;
     dm->m_backlightIsOn = false;
+
+    // backlight is at zero: now really power the panel down. Only if the
+    // display is still meant to be off (a power key press may have raced us).
+    if (!dm->m_displayOn)
+        dm->updateCompositorDisplayState(false);
 }
 
-/* FIXME this needs rework somehow for luna-surfacemanager
-void DisplayManager::updateCompositorDisplayState(bool on, LSMethodFunction cb , void *context)
+// Panel power through the compositor.
+//
+// "Display off" used to only zero the backlight; the panel, DSI link and
+// hwcomposer kept running. Besides the power cost, on Halium the kernel's
+// DRM suspend path then blanks the panel itself on every suspend attempt
+// and unblanks it on resume, and on sargo that DSI blank/unblank talks to
+// the touch bus negotiator over QMI, whose IPC wakeup source aborts the
+// very suspend that triggered it. Android never hits this because
+// SurfaceFlinger powers the display off before suspend; we do the same via
+// the compositor: com.webos.surfacemanager/setDisplayState, which ends in
+// QPlatformScreen::setPowerState() (DRM DPMS on eglfs-kms, hwcomposer
+// setPowerMode on Halium).
+//
+// Ordering: off = backlight to zero first (backlightOffCallback), then the
+// panel; on = panel first, then the backlight (displayOnCallback runs from
+// compositorDisplayStateDone). The wait for the compositor's reply is
+// bounded by COMPOSITOR_REPLY_TIMEOUT_MS so a missing or hung compositor
+// can never keep the backlight down or veto suspend for good.
+void DisplayManager::updateCompositorDisplayState(bool on)
 {
-    g_debug("%s: on %d", __PRETTY_FUNCTION__, on);
-
     LSError lserror;
     LSErrorInit(&lserror);
-    if (!LSCall(m_service, "luna://org.webosports.luna/setDisplayState",
-                on ? "{\"state\":\"on\"}" : "{\"state\":\"off\"}",
-                cb, context, NULL, &lserror)) {
-        LSErrorPrint(&lserror, stdout);
-        LSErrorFree(&lserror);
+
+    // drop whatever is still in flight; the newest request wins
+    if (m_compositorTimer->running())
+        m_compositorTimer->stop();
+    if (m_compositorCallToken != LSMESSAGE_TOKEN_INVALID) {
+        LSCallCancel(m_service, m_compositorCallToken, NULL);
+        m_compositorCallToken = LSMESSAGE_TOKEN_INVALID;
     }
+
+    m_compositorPendingOn = on;
+    g_message("%s: asking the compositor to turn the panel %s", __PRETTY_FUNCTION__, on ? "on" : "off");
+
+    if (!LSCallOneReply(m_service, URI_COMPOSITOR_SET_DISPLAY_STATE,
+                        on ? "{\"state\":\"on\"}" : "{\"state\":\"off\"}",
+                        DisplayManager::compositorDisplayStateCallback, this,
+                        &m_compositorCallToken, &lserror)) {
+        LSErrorPrint(&lserror, stderr);
+        LSErrorFree(&lserror);
+        m_compositorCallToken = LSMESSAGE_TOKEN_INVALID;
+        compositorDisplayStateDone(on, false);
+        return;
+    }
+
+    m_compositorTimer->start(COMPOSITOR_REPLY_TIMEOUT_MS);
 }
-*/
+
+bool DisplayManager::compositorDisplayStateCallback(LSHandle *sh, LSMessage *message, void *ctx)
+{
+    DisplayManager *dm = (DisplayManager *)ctx;
+    bool ok = false;
+
+    dm->m_compositorCallToken = LSMESSAGE_TOKEN_INVALID;
+
+    const char *str = LSMessageGetPayload(message);
+    json_object *root = str ? json_tokener_parse(str) : NULL;
+    if (root) {
+        json_object *label = json_object_object_get(root, "returnValue");
+        ok = label && json_object_get_boolean(label);
+        if (!ok)
+            g_warning("%s: compositor refused: %s", __PRETTY_FUNCTION__, str);
+        json_object_put(root);
+    }
+
+    dm->compositorDisplayStateDone(dm->m_compositorPendingOn, ok);
+    return true;
+}
+
+bool DisplayManager::compositorTimeout()
+{
+    g_warning("%s: no reply from the compositor within %d ms, carrying on", __PRETTY_FUNCTION__, COMPOSITOR_REPLY_TIMEOUT_MS);
+    if (m_compositorCallToken != LSMESSAGE_TOKEN_INVALID) {
+        LSCallCancel(m_service, m_compositorCallToken, NULL);
+        m_compositorCallToken = LSMESSAGE_TOKEN_INVALID;
+    }
+    compositorDisplayStateDone(m_compositorPendingOn, false);
+    return false;
+}
+
+void DisplayManager::compositorDisplayStateDone(bool on, bool confirmed)
+{
+    if (m_compositorTimer->running())
+        m_compositorTimer->stop();
+
+    // Whether confirmed or not, this is now our best knowledge of the panel;
+    // a compositor that is absent must not block the backlight or suspend.
+    m_compositorDisplayOn = on;
+    g_message("%s: panel %s (%s)", __PRETTY_FUNCTION__, on ? "on" : "off", confirmed ? "confirmed by compositor" : "unconfirmed");
+
+    // the panel is up: now raise the backlight (unless the display went off
+    // again while we waited)
+    if (on && m_displayOn)
+        displayOnCallback(NULL, NULL, this);
+}
+
+// The compositor (re)started: its panel power state is back to "on", so
+// tell it what we currently want. At boot this is a harmless "on".
+bool DisplayManager::compositorServiceNotification(LSHandle *sh, const char *serviceName, bool connected, void *ctx)
+{
+    DisplayManager *dm = (DisplayManager *)ctx;
+
+    if (connected) {
+        g_message("%s: %s is up, syncing panel power (%s)", __PRETTY_FUNCTION__, serviceName, dm->m_displayOn ? "on" : "off");
+        dm->m_compositorDisplayOn = true;
+        dm->updateCompositorDisplayState(dm->m_displayOn);
+    }
+
+    return true;
+}
 
 void DisplayManager::getBearingInfo(double& latitude, double& longitude)
 {
@@ -3883,10 +4008,9 @@ void DisplayManager::displayOn(bool als)
                 notifySubscribers (DISPLAY_EVENT_ON);
         }
 
-        /*FIXME this needs rework for luna-surfacemanager
-        updateCompositorDisplayState(true, &DisplayManager::displayOnCallback, this);
-        */
-        displayOnCallback(NULL, NULL, this);
+        // power the panel up first; the backlight follows from
+        // compositorDisplayStateDone (or after the bounded wait)
+        updateCompositorDisplayState(true);
     }
     else {
         displayOnCallback(NULL, NULL, this);
@@ -3950,14 +4074,9 @@ void DisplayManager::displayOff()
         m_drop_pen = true;
     }
 
-    // whatever the state was, the backlight has to be turned off before we blank the hwcomposer
+    // whatever the state was, the backlight has to be turned off before we
+    // blank the panel; backlightOffCallback sends the compositor request
     displayOffCallback(NULL, NULL, this);
-
-    if (wasDisplayOnBefore) {
-        /* FIXME this needs updating for luna-surfacemanager
-        updateCompositorDisplayState(false, NULL, NULL);
-        */
-    }
 }
 
 bool DisplayManager::displayOffCallback(LSHandle *handle, LSMessage *message, gpointer context)
@@ -3992,8 +4111,10 @@ void DisplayManager::handleTouchEvent()
 
 bool DisplayManager::allowSuspend()
 {
-    // allow suspend when state is off and backlight is really off.
-    return currentState() == DisplayStateOff && !m_backlightIsOn;
+    // allow suspend when state is off, the backlight is really off and the
+    // panel has been powered down (or the compositor wait has expired), so
+    // the kernel does not have to blank/unblank the panel on every attempt.
+    return currentState() == DisplayStateOff && !m_backlightIsOn && !m_compositorDisplayOn;
 }
 
 
