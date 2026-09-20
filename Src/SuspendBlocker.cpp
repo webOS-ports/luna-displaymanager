@@ -269,9 +269,31 @@ bool SuspendBlockerBase::cbPowerdUp(LSHandle* sh, LSMessage* msg, void* ctx)
                 }
             }
             else {
-                
+
                 s->m_registeredPrepareSuspend = false;
                 s->m_registeredSuspendRequest = false;
+
+                /*
+                 * powerd went away. If it did so between its prepareSuspend
+                 * broadcast and the resume that answers it - which is exactly
+                 * what a restart of the service looks like from here, since
+                 * the last resume may never be delivered - the display state
+                 * machine is still in OffSuspended, where allowSuspend() is
+                 * false because it insists on plain Off. Nothing would ever
+                 * move it back: the display is already off, so no display
+                 * event follows, and every later suspend request from the new
+                 * powerd is NACKed forever.
+                 *
+                 * Measured on tissot (2026-09-20): restarting sleepd two
+                 * seconds after a resume left the phone awake for 57 minutes
+                 * with the display off and no wakelocks, 6532 NACKs from this
+                 * client, and suspends resumed the moment the display manager
+                 * was restarted.
+                 *
+                 * The device is plainly not suspended if powerd is not even
+                 * running, so say so.
+                 */
+                s->setSuspended(false);
             }
         }
             
