@@ -377,6 +377,7 @@ private Q_SLOTS:
     void slotHideIME();
     void slotBluetoothKeyboardActive(bool active);
     void slotAirplaneModeChanged(bool change);
+    void slotPostMaximumBrightness(int brightness);
 
 Q_SIGNALS:
 

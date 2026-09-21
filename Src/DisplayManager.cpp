@@ -248,6 +248,11 @@ DisplayManager::DisplayManager()
     // connect(IMEController::instance(), SIGNAL(signalHideIME()), this, SLOT(slotHideIME()));
     connect(HostBase::instance(), SIGNAL(signalBluetoothKeyboardActive(bool)), this, SLOT(slotBluetoothKeyboardActive(bool)));
     connect(Preferences::instance(), SIGNAL(signalAirplaneModeChanged(bool)), this, SLOT(slotAirplaneModeChanged(bool)));
+    // signalDisplayMaxBrightnessChanged was emitted but nothing listened; it is
+    // now what drives the getProperty subscription, so every path that changes
+    // the value notifies subscribers without each one having to remember to.
+    connect(this, &DisplayManager::signalDisplayMaxBrightnessChanged,
+            this, &DisplayManager::slotPostMaximumBrightness);
 
     m_lastEvent = Time::curTimeMs();
     m_lastKey= m_lastEvent;
@@ -1792,6 +1797,21 @@ Get display properties.
 \subsection com_palm_display_control_get_property_examples Examples:
 \code
 luna-send -n 1 -f luna://com.palm.display/control/getProperty '{ "properties": ["maximumBrightness", "timeout", "requestBlock", "onWhenConnected" ] } '
+
+Pass "subscribe": true to be told when a property changes afterwards instead of
+polling for it. The reply carries "subscribed", and each later change arrives as
+a further reply on the same call:
+
+\code
+luna-send -i -f luna://com.palm.display/control/getProperty '{ "properties": ["maximumBrightness"], "subscribe": true }'
+
+{ "returnValue": true, "subscribed": true, "maximumBrightness": 75 }
+{ "returnValue": true, "subscribed": true, "maximumBrightness": 40 }
+\endcode
+
+Subscribers are keyed on the method, not on the properties they asked for, so a
+subscriber hears about any property that has a notifier - currently
+maximumBrightness.
 \endcode
 
 Example response for a succesful call:
@@ -1822,9 +1842,10 @@ bool DisplayManager::controlGetProperty(LSHandle *sh, LSMessage *message, void *
     // {"properties": array}
     VALIDATE_SCHEMA_AND_RETURN(sh,
                                message,
-                               SCHEMA_1(REQUIRED(properties, array)));
+                               SCHEMA_2(REQUIRED(properties, array), REQUIRED(subscribe, boolean)));
 
     bool result = true;
+    bool subscribed = false;
     const char* str = LSMessageGetPayload(message);
     json_object* root = 0;
     json_object* array = 0;
@@ -1845,6 +1866,24 @@ bool DisplayManager::controlGetProperty(LSHandle *sh, LSMessage *message, void *
     }
 
     json_object_object_add(reply, "returnValue", json_object_new_boolean(true));
+
+    // Subscribe for later changes. Callers had no way to hear about a value
+    // changing underneath them - luna-next-cardshell's brightness slider polled
+    // com.palm.display every 15 s for exactly this reason, and that poll fought
+    // the user's own gesture. Subscribers are keyed on the method rather than on
+    // the individual properties asked for, so a subscriber is told about any
+    // property that grows a notifier; today that is maximumBrightness, posted
+    // from slotPostMaximumBrightness().
+    if (LSMessageIsSubscription(message))
+    {
+        if (!LSSubscriptionProcess(sh, message, &subscribed, &lserror))
+        {
+            LSErrorPrint(&lserror, stderr);
+            LSErrorFree(&lserror);
+            subscribed = false;
+        }
+    }
+    json_object_object_add(reply, "subscribed", json_object_new_boolean(subscribed));
 
     result = false;
 
@@ -2840,6 +2879,26 @@ void DisplayManager::markBootFinished(bool finished)
         // Update compass with correct lat/long
         requestCurrentLocation();
     }
+}
+
+void DisplayManager::slotPostMaximumBrightness(int brightness)
+{
+    LSError lserror;
+    LSErrorInit(&lserror);
+    bool result = true;
+
+    gchar *payload = g_strdup_printf(
+            "{\"returnValue\":true,\"subscribed\":true,\"maximumBrightness\":%i}",
+            brightness);
+
+    if (NULL != payload)
+        result = LSSubscriptionReply(m_service, "/control/getProperty", payload,
+                &lserror);
+    if (!result) {
+        LSErrorPrint(&lserror, stderr);
+        LSErrorFree(&lserror);
+    }
+    g_free(payload);
 }
 
 void DisplayManager::slotShowIME()
