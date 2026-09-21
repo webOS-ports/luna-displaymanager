@@ -35,6 +35,7 @@
 
 #include <QEvent>
 #include <QObject>
+#include <QProximitySensor>
 
 #include <luna-service2/lunaservice.h>
 
@@ -256,6 +257,10 @@ private:
     int32_t                m_proximityCount;
     bool                   m_proximityEnabled;
     bool                   m_proximityActivated;
+    /* Qt Sensors, not nyx: the same stack AmbientLightSensor uses, which is
+     * the only one that works on hybris devices. Created on the first
+     * proximityOn() so a device that never takes a call never opens it. */
+    QProximitySensor*      m_proximitySensor;
 
     LSMessageToken         m_calbackOnToken;
     LSMessageToken         m_calbackOffToken;
@@ -378,6 +383,7 @@ private Q_SLOTS:
     void slotBluetoothKeyboardActive(bool active);
     void slotAirplaneModeChanged(bool change);
     void slotPostMaximumBrightness(int brightness);
+    void slotProximityChanged();
 
 Q_SIGNALS:
 

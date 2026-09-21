@@ -209,6 +209,7 @@ DisplayManager::DisplayManager()
     , m_proximityCount(0)
     , m_proximityEnabled(false)
     , m_proximityActivated(false)
+    , m_proximitySensor(NULL)
     , m_calbackOnToken(0)
     , m_calbackOffToken(0)
     , m_displayOn(false)
@@ -893,17 +894,42 @@ bool DisplayManager::bootMgrServiceNotification(LSHandle *handle, const char *se
     return true;
 }
 
+/* The screen has to blank while the phone is against the ear, and come back
+ * when it is taken away. The state machine has always been ready for that -
+ * DisplayStateOn and DisplayStateDim both move to DisplayStateOffOnCall on
+ * DisplayEventProximityOn, and OffOnCall goes back on DisplayEventProximityOff -
+ * and the phone app has always asked for it, by subscribing to
+ * com.palm.display/control/setProperty with proximityEnabled while a call is up
+ * on the earpiece. What was missing in between was anything that produced those
+ * two events: nobody ever called updateState(DISPLAY_EVENT_PROXIMITY_ON).
+ *
+ * The reading used to arrive - if it arrived at all - as a ProximityEvent posted
+ * by HostArm::readProxData() to QApplication::activeWindow(), which is null in a
+ * windowless daemon, so it went nowhere. That reader is gone; this is its
+ * replacement, on the same Qt Sensors stack AmbientLightSensor already uses, so
+ * hybris devices are served by sensorfw's hybrisproximityadaptor exactly like
+ * mainline ones are served by the evdev or sysfs adaptor.
+ */
 bool DisplayManager::proximityOn ()
 {
     if (!m_proximityEnabled)
     {
-        /* fine-tuning support for NYX */
-        InputControl* ic = HostBase::instance()->getInputControlProximity();
-        if (NULL != ic)
+        if (NULL == m_proximitySensor)
         {
-            if (!ic->on())
-                return false;
+            m_proximitySensor = new QProximitySensor(this);
+            connect(m_proximitySensor, SIGNAL(readingChanged()),
+                    this, SLOT(slotProximityChanged()));
         }
+
+        if (!m_proximitySensor->start())
+        {
+            /* No backend, or it refused to start. Say so and carry on: the
+             * caller is a phone call, and failing the whole setProperty over a
+             * missing sensor would be worse than a screen that stays lit. */
+            g_warning ("%s: no usable proximity sensor, the display will not "
+                       "blank against the ear", __PRETTY_FUNCTION__);
+        }
+
         m_proximityEnabled = true;
         rearmInactivityTimer ();
     }
@@ -919,19 +945,40 @@ bool DisplayManager::proximityOff ()
 
     if (m_proximityEnabled)
     {
-        /* fine-tuning support for NYX */
-        InputControl* ic = HostBase::instance()->getInputControlProximity();
-        if (NULL != ic)
-        {
-            if (!ic->off())
-                return false;
-        }
+        if (NULL != m_proximitySensor)
+            m_proximitySensor->stop();
+
         m_proximityEnabled = false;
         m_proximityActivated = false;
         rearmInactivityTimer ();
     }
 
     return true;
+}
+
+void DisplayManager::slotProximityChanged ()
+{
+    if (NULL == m_proximitySensor)
+        return;
+
+    QProximityReading* reading = m_proximitySensor->reading();
+    if (NULL == reading)
+        return;
+
+    /* Only act on a change. sensorfw repeats the current value on connect and
+     * on every poll of some adaptors, and each repeat would otherwise re-enter
+     * the state machine and cancel the inactivity timer. */
+    const bool covered = reading->close();
+    if (covered == m_proximityActivated)
+        return;
+
+    m_proximityActivated = covered;
+
+    g_debug ("%s: proximity sensor reports %s", __PRETTY_FUNCTION__,
+             covered ? "covered" : "clear");
+
+    updateState (covered ? DISPLAY_EVENT_PROXIMITY_ON
+                         : DISPLAY_EVENT_PROXIMITY_OFF);
 }
 
 
