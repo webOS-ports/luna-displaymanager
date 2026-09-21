@@ -843,6 +843,15 @@ void DisplayOn::stopInactivityTimer()
         m_timerInternal->stop();
 }
 
+void DisplayOn::checkInactivityTimer()
+{
+    if (m_timerUser->running() || m_timerInternal->running())
+        return;
+
+    g_warning ("%s: inactivity timer lost, running timeout now", __PRETTY_FUNCTION__);
+    timeoutUser();
+}
+
 bool DisplayOn::timeoutUser()
 {
     uint32_t now = Time::curTimeMs();
@@ -1091,6 +1100,15 @@ void DisplayOnLocked::stopInactivityTimer()
         m_timer->stop();
 }
 
+void DisplayOnLocked::checkInactivityTimer()
+{
+    if (m_timer->running())
+        return;
+
+    g_warning ("%s: inactivity timer lost, running timeout now", __PRETTY_FUNCTION__);
+    timeout();
+}
+
 bool DisplayOnLocked::timeout()
 {
     uint32_t now = Time::curTimeMs();
@@ -1313,6 +1331,15 @@ void DisplayDim::stopInactivityTimer()
     g_debug ("%s: ", __PRETTY_FUNCTION__);
     if (m_timer->running())
         m_timer->stop();
+}
+
+void DisplayDim::checkInactivityTimer()
+{
+    if (m_timer->running())
+        return;
+
+    g_warning ("%s: inactivity timer lost, running timeout now", __PRETTY_FUNCTION__);
+    timeout();
 }
 
 bool DisplayDim::timeout()
@@ -1572,6 +1599,16 @@ void DisplayOnPuck::stopInactivityTimer()
     g_debug ("%s: ", __PRETTY_FUNCTION__);
     if (m_timer->running())
         m_timer->stop();
+}
+
+void DisplayOnPuck::checkInactivityTimer()
+{
+    // no timer while on a call, by design (see startInactivityTimer)
+    if (m_timer->running() || isOnCall())
+        return;
+
+    g_warning ("%s: inactivity timer lost, running timeout now", __PRETTY_FUNCTION__);
+    timeout();
 }
 
 bool DisplayOnPuck::timeout()
@@ -2125,6 +2162,13 @@ void DisplayOffSuspended::handleEvent (DisplayEvent displayEvent, sptr<Event> ev
         break;
 
     case DisplayEventApiOff:
+        // off() while suspended (an alert/banner that lit us up was
+        // dismissed before the device resumed): cancel the pending
+        // restore-to-on so the resume brings the display back dark.
+        g_debug ("%s: public api off called, restoring to off on resume", __PRETTY_FUNCTION__);
+        m_restoreState = DisplayStateOff;
+        m_restoreDisplayEvent = DisplayEventPowerdResume;
+        m_restoreEvent = NULL;
         break;
 
     case DisplayEventUserActivity:

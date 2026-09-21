@@ -44,6 +44,8 @@
 #include <glib.h>
 #include <luna-service2/lunaservice.h>
 
+#include <algorithm>
+
 #if defined(HAS_LUNA_PREF)
 #include <lunaprefs.h>
 #endif
@@ -79,6 +81,13 @@
 #define URI_DISPLAY_POWER_KEY_SIGNAL "palm://com.palm.display/com/palm/display/powerKeyPressed"
 #define JSON_DISPLAY_POWER_KEY_SIGNAL "{\"showDialog\":true}"
 
+#define WATCHDOG_MIN_PERIOD_MS 5000
+
+#define URI_COMPOSITOR_SET_DISPLAY_STATE "luna://com.webos.surfacemanager/setDisplayState"
+// Longest we wait for the compositor to confirm a panel power change
+// before carrying on (raising the backlight / allowing suspend) anyway.
+#define COMPOSITOR_REPLY_TIMEOUT_MS 500
+
 #define DEFAULT_TIMEOUT          120
 #define DEFAULT_BRIGHTNESS       40
 
@@ -97,6 +106,10 @@
 #define SLIDER_TIMEOUT 1500
 #define SLIDER_MINTIME 200
 #define ALERT_TIMEOUT  6000
+// A banner only lights an off display if it is still showing after this
+// long; luna-next-cardshell pulses banner-activated/deactivated within
+// ~70 ms for transient banners (e.g. "charger disconnected").
+#define BANNER_WAKE_DELAY_MS 250
 #define SLIDER_LOCK_TIMEOUT  2000
 #define TOUCHPANEL_DELAY 200
 #define DISPLAY_LOCK_TIMEOUT 2000
@@ -167,6 +180,7 @@ DisplayManager::DisplayManager()
     , m_chargerConnected(CHARGER_NONE)
     , m_batteryL(100)
     , m_onWhenConnected(false)
+    , m_chargerDNASTHeld(false)
     , m_drop_key(false)
     , m_drop_pen(false)
     , m_allow_move(false)
@@ -205,6 +219,8 @@ DisplayManager::DisplayManager()
     , m_power(new Timer<DisplayManager>(HostBase::instance()->masterTimer(), this, &DisplayManager::power))
     , m_slider(new Timer<DisplayManager>(HostBase::instance()->masterTimer(), this, &DisplayManager::slider))
     , m_alertTimer(new Timer<DisplayManager>(HostBase::instance()->masterTimer(), this, &DisplayManager::alertTimerCallback))
+    , m_watchdog(new Timer<DisplayManager>(HostBase::instance()->masterTimer(), this, &DisplayManager::inactivityWatchdog))
+    , m_bannerWakeTimer(new Timer<DisplayManager>(HostBase::instance()->masterTimer(), this, &DisplayManager::bannerWakeCallback))
     , m_maxBrightness(DEFAULT_BRIGHTNESS)
     , m_currentState (NULL)
     , m_displayStates (NULL)
@@ -213,6 +229,10 @@ DisplayManager::DisplayManager()
     , m_suspendBlocker(HostBase::instance()->mainLoop(),
                        this, &DisplayManager::allowSuspend, &DisplayManager::setSuspended)
     , m_powerKeyPressEventScheduled(false)
+    , m_compositorDisplayOn(true)
+    , m_compositorPendingOn(true)
+    , m_compositorCallToken(LSMESSAGE_TOKEN_INVALID)
+    , m_compositorTimer(new Timer<DisplayManager>(HostBase::instance()->masterTimer(), this, &DisplayManager::compositorTimeout))
 {
     GMainLoop* mainLoop = HostBase::instance()->mainLoop();
 
@@ -228,6 +248,11 @@ DisplayManager::DisplayManager()
     // connect(IMEController::instance(), SIGNAL(signalHideIME()), this, SLOT(slotHideIME()));
     connect(HostBase::instance(), SIGNAL(signalBluetoothKeyboardActive(bool)), this, SLOT(slotBluetoothKeyboardActive(bool)));
     connect(Preferences::instance(), SIGNAL(signalAirplaneModeChanged(bool)), this, SLOT(slotAirplaneModeChanged(bool)));
+    // signalDisplayMaxBrightnessChanged was emitted but nothing listened; it is
+    // now what drives the getProperty subscription, so every path that changes
+    // the value notifies subscribers without each one having to remember to.
+    connect(this, &DisplayManager::signalDisplayMaxBrightnessChanged,
+            this, &DisplayManager::slotPostMaximumBrightness);
 
     m_lastEvent = Time::curTimeMs();
     m_lastKey= m_lastEvent;
@@ -321,6 +346,20 @@ DisplayManager::DisplayManager()
     {
         LSErrorPrint (&lserror, stderr);
         LSErrorFree (&lserror);
+    }
+
+    result = LSRegisterServerStatusEx(m_service, "com.webos.surfacemanager", DisplayManager::compositorServiceNotification, this, NULL, &lserror);
+    if (!result)
+    {
+        LSErrorPrint(&lserror, stderr);
+        LSErrorFree(&lserror);
+    }
+
+    result = LSRegisterServerStatusEx(m_service, "com.webos.service.battery", DisplayManager::batteryServiceNotification, this, NULL, &lserror);
+    if (!result)
+    {
+        LSErrorPrint(&lserror, stderr);
+        LSErrorFree(&lserror);
     }
 
     result = LSRegisterServerStatusEx(m_service, "org.webosports.bootmgr", DisplayManager::bootMgrServiceNotification, this, NULL, &lserror);
@@ -443,6 +482,7 @@ DisplayManager::DisplayManager()
 
     m_currentState->enter(DisplayStateOff, DisplayEventApiOn, NULL); // initializing state
     m_activity->start (m_activityTimeout);
+    m_watchdog->start (watchdogPeriod());
 }
 
 DisplayManager* DisplayManager::instance (void)
@@ -512,9 +552,33 @@ bool DisplayManager::isDNAST() const
     return m_dnast > 0;
 }
 
+// "On the puck" means docked on an inductive charger (Touchstone-style
+// dock): that is what DockMode / OnPuck exist for. A plain USB (or wall)
+// charger is NOT a dock: the display follows the normal dim/off timeouts
+// while charging, unless the user opted into "onWhenConnected".
 bool DisplayManager::isOnPuck() const
 {
-    return (m_chargerConnected != CHARGER_NONE);
+    return (m_chargerConnected & CHARGER_INDUCTIVE) ? true : false;
+}
+
+// "Stay on while charging" (preference onWhenConnected) is implemented as
+// one DNAST hold that mirrors "preference set AND any charger present".
+// Deriving it from the current state instead of pushing/popping on
+// individual connect/disconnect events keeps the hold balanced when the
+// two charger signals (chargerStatus and USBDockStatus) report the same
+// change, or when the preference is toggled while charging.
+void DisplayManager::updateChargerDNAST()
+{
+    bool want = m_onWhenConnected && (m_chargerConnected != CHARGER_NONE);
+
+    if (want == m_chargerDNASTHeld)
+        return;
+
+    m_chargerDNASTHeld = want;
+    if (want)
+        pushDNAST ("dm-on-when-connected");
+    else
+        popDNAST ("dm-on-when-connected");
 }
 
 bool DisplayManager::isDisplayOn() const
@@ -542,9 +606,16 @@ int DisplayManager::offTimeout() const
     return m_offTimeout;
 }
 
+// Timeout used by OnLocked (lock screen showing) and by On when it was
+// entered through the setState "on" API rather than by user input. Its
+// base value is LockScreenTimeout from luna.conf (60 s by default), which
+// is longer than a short "timeout" preference: with timeout=20 the
+// unlocked screen would go off after 20 s but the lock screen only after
+// 60 s. The user's preference is the upper bound for any screen-on time,
+// so never exceed it here.
 int DisplayManager::lockedOffTimeout() const
 {
-    return m_lockedOffTimeout;
+    return std::min (m_lockedOffTimeout, m_totalTimeout);
 }
 
 int DisplayManager::lastEvent() const
@@ -589,9 +660,10 @@ bool DisplayManager::pushDNAST(const char *id)
 
     m_dnast++;
 
-    if (!m_powerdOnline)
-        return true;
-
+    // Note: the display policy must not depend on sleepd being on the bus.
+    // An earlier version skipped the timer handling below while sleepd
+    // was offline, which left the state's single-shot timer stopped (or
+    // running) out of step with the DNAST count.
     g_debug ("%s: push (%i)", __FUNCTION__, m_dnast);
 
     if (m_dnast == 1)
@@ -621,9 +693,6 @@ bool DisplayManager::popDNAST(const char *id)
 
     m_dnast--;
 
-    if (!m_powerdOnline)
-        return true;
-
     g_debug ("%s: pop (%i)", __FUNCTION__, m_dnast);
 
     if (m_dnast <= 0)
@@ -637,37 +706,64 @@ bool DisplayManager::popDNAST(const char *id)
 }
 
 
-bool DisplayManager::powerdServiceNotification(LSHandle *sh, const char *serviceName, bool connected, void *ctx)
+// Ask batteryd (com.webos.service.battery) for the current charger, dock
+// and battery state. batteryd answers the *Query signals with its regular
+// chargerStatus / USBDockStatus / batteryStatus signals, which land in the
+// callbacks registered in the constructor.
+void DisplayManager::requestPowerStatus(LSHandle *sh)
 {
     LSError lserror;
     LSErrorInit(&lserror);
-    bool result = true;
+    bool result;
 
+    result = LSSignalSend(sh, URI_CHARGER_SIGNAL_REQUEST, JSON_SIGNAL_REQUEST, &lserror);
+    if (!result)
+    {
+        LSErrorPrint (&lserror, stderr);
+        LSErrorFree (&lserror);
+    }
+
+    result = LSSignalSend(sh, URI_USBDOCK_SIGNAL_REQUEST, JSON_SIGNAL_REQUEST, &lserror);
+    if (!result)
+    {
+        LSErrorPrint (&lserror, stderr);
+        LSErrorFree (&lserror);
+    }
+
+    result = LSSignalSend(sh, URI_POWERD_BATTERY_SIGNAL_REQUEST, JSON_SIGNAL_REQUEST, &lserror);
+    if (!result)
+    {
+        LSErrorPrint (&lserror, stderr);
+        LSErrorFree (&lserror);
+    }
+}
+
+// The charger state is owned by batteryd, not by sleepd: query it whenever
+// batteryd (re)appears on the bus, so the display manager knows about a
+// charger plugged in before it started even if sleepd is late or absent.
+bool DisplayManager::batteryServiceNotification(LSHandle *sh, const char *serviceName, bool connected, void *ctx)
+{
+    DisplayManager *dm = (DisplayManager *)ctx;
+
+    if (connected)
+    {
+        g_message ("%s: %s is up, querying charger and battery state", __PRETTY_FUNCTION__, serviceName);
+        dm->requestPowerStatus (sh);
+    }
+
+    return true;
+}
+
+bool DisplayManager::powerdServiceNotification(LSHandle *sh, const char *serviceName, bool connected, void *ctx)
+{
     DisplayManager *dm = (DisplayManager *)ctx;
     dm->m_powerdOnline = connected;
 
     if (connected)
     {
-        result = LSSignalSend(sh, URI_CHARGER_SIGNAL_REQUEST, JSON_SIGNAL_REQUEST, &lserror);
-        if (!result)
-        {
-            LSErrorPrint (&lserror, stderr);
-            LSErrorFree (&lserror);
-        }
-
-        result = LSSignalSend(sh, URI_USBDOCK_SIGNAL_REQUEST, JSON_SIGNAL_REQUEST, &lserror);
-        if (!result)
-        {
-            LSErrorPrint (&lserror, stderr);
-            LSErrorFree (&lserror);
-        }
-
-        result = LSSignalSend(sh, URI_POWERD_BATTERY_SIGNAL_REQUEST, JSON_SIGNAL_REQUEST, &lserror);
-        if (!result)
-        {
-            LSErrorPrint (&lserror, stderr);
-            LSErrorFree (&lserror);
-        }
+        // Kept for parity with the old powerd contract; batteryd is the
+        // service that actually answers (see batteryServiceNotification).
+        dm->requestPowerStatus (sh);
 
         dm->m_lastEvent = Time::curTimeMs();
         g_message ("%s: calling on()", __PRETTY_FUNCTION__);
@@ -809,6 +905,7 @@ bool DisplayManager::proximityOn ()
                 return false;
         }
         m_proximityEnabled = true;
+        rearmInactivityTimer ();
     }
 
     return true;
@@ -831,6 +928,7 @@ bool DisplayManager::proximityOff ()
         }
         m_proximityEnabled = false;
         m_proximityActivated = false;
+        rearmInactivityTimer ();
     }
 
     return true;
@@ -890,6 +988,7 @@ bool DisplayManager::audiodCallback(LSHandle *sh, LSMessage *message, void *ctx)
                 // update the display ALS state
                 dm->updateState (DISPLAY_EVENT_ALS_REGION_CHANGED);
             }
+            dm->rearmInactivityTimer ();
         }
     }
 
@@ -1115,6 +1214,8 @@ bool DisplayManager::usbDockCallback(LSHandle *sh, LSMessage *message, void *ctx
     }
 
     dm->m_chargerConnected = newState;
+    dm->updateChargerDNAST ();
+    dm->rearmInactivityTimer ();
     dm->updateBrightness ();
 
 error:
@@ -1161,6 +1262,23 @@ bool DisplayManager::chargerCallback(LSHandle *sh, LSMessage *message, void *ctx
     else if (0 == strcmp (json_object_get_string(label), "inductive"))
     {
         usb = false;
+    }
+    else if (0 == strcmp (json_object_get_string(label), "none"))
+    {
+        // batteryd derives "type" from what powers the device right now,
+        // so every disconnect arrives as type "none" / connected false.
+        // Treat that as "no charger at all" instead of ignoring it, so the
+        // charger bits cannot go stale if the USBDockStatus signal is lost.
+        label = json_object_object_get(root, "connected");
+        if (!label || json_object_get_boolean(label))
+            goto error;
+
+        newState = CHARGER_NONE;
+        if (dm->m_chargerConnected & CHARGER_INDUCTIVE)
+            event = DISPLAY_EVENT_INDUCTIVE_CHARGER_DISCONNECTED;
+        else if (dm->m_chargerConnected & CHARGER_USB)
+            event = DISPLAY_EVENT_USB_CHARGER_DISCONNECTED;
+        goto apply;
     }
     else
     {
@@ -1214,11 +1332,14 @@ bool DisplayManager::chargerCallback(LSHandle *sh, LSMessage *message, void *ctx
         }
     }
 
+apply:
     dm->m_chargerConnected = newState;
 
     if (DISPLAY_EVENT_NONE != event)
         dm->updateState (event);
 
+    dm->updateChargerDNAST ();
+    dm->rearmInactivityTimer ();
     dm->updateBrightness ();
 
 error:
@@ -1397,6 +1518,7 @@ bool DisplayManager::controlCallStatus(LSHandle *sh, LSMessage *message, void *c
             dm->m_onCall = true;
             dm->m_lastEvent = Time::curTimeMs();
             dm->updateState (DISPLAY_EVENT_ON_CALL);
+            dm->rearmInactivityTimer ();
         }
         // check if the audio is on the front speaker and start proximity sensor
     }
@@ -1406,6 +1528,7 @@ bool DisplayManager::controlCallStatus(LSHandle *sh, LSMessage *message, void *c
             dm->m_onCall = false;
             dm->m_lastEvent = Time::curTimeMs();
             dm->updateState (DISPLAY_EVENT_OFF_CALL);
+            dm->rearmInactivityTimer ();
         }
         // if prox sensor was enabled, turn it off and turn display on
     }
@@ -1623,6 +1746,9 @@ bool DisplayManager::setTimeout (int timeoutInMs)
     notifySubscribers (DISPLAY_EVENT_TIMEOUTS);
 
     m_currentState->startInactivityTimer();
+    // the watchdog period follows the off timeout
+    if (m_watchdog)
+        m_watchdog->start (watchdogPeriod());
     return true;
 }
 
@@ -1671,6 +1797,21 @@ Get display properties.
 \subsection com_palm_display_control_get_property_examples Examples:
 \code
 luna-send -n 1 -f luna://com.palm.display/control/getProperty '{ "properties": ["maximumBrightness", "timeout", "requestBlock", "onWhenConnected" ] } '
+
+Pass "subscribe": true to be told when a property changes afterwards instead of
+polling for it. The reply carries "subscribed", and each later change arrives as
+a further reply on the same call:
+
+\code
+luna-send -i -f luna://com.palm.display/control/getProperty '{ "properties": ["maximumBrightness"], "subscribe": true }'
+
+{ "returnValue": true, "subscribed": true, "maximumBrightness": 75 }
+{ "returnValue": true, "subscribed": true, "maximumBrightness": 40 }
+\endcode
+
+Subscribers are keyed on the method, not on the properties they asked for, so a
+subscriber hears about any property that has a notifier - currently
+maximumBrightness.
 \endcode
 
 Example response for a succesful call:
@@ -1701,9 +1842,10 @@ bool DisplayManager::controlGetProperty(LSHandle *sh, LSMessage *message, void *
     // {"properties": array}
     VALIDATE_SCHEMA_AND_RETURN(sh,
                                message,
-                               SCHEMA_1(REQUIRED(properties, array)));
+                               SCHEMA_2(REQUIRED(properties, array), REQUIRED(subscribe, boolean)));
 
     bool result = true;
+    bool subscribed = false;
     const char* str = LSMessageGetPayload(message);
     json_object* root = 0;
     json_object* array = 0;
@@ -1724,6 +1866,24 @@ bool DisplayManager::controlGetProperty(LSHandle *sh, LSMessage *message, void *
     }
 
     json_object_object_add(reply, "returnValue", json_object_new_boolean(true));
+
+    // Subscribe for later changes. Callers had no way to hear about a value
+    // changing underneath them - luna-next-cardshell's brightness slider polled
+    // com.palm.display every 15 s for exactly this reason, and that poll fought
+    // the user's own gesture. Subscribers are keyed on the method rather than on
+    // the individual properties asked for, so a subscriber is told about any
+    // property that grows a notifier; today that is maximumBrightness, posted
+    // from slotPostMaximumBrightness().
+    if (LSMessageIsSubscription(message))
+    {
+        if (!LSSubscriptionProcess(sh, message, &subscribed, &lserror))
+        {
+            LSErrorPrint(&lserror, stderr);
+            LSErrorFree(&lserror);
+            subscribed = false;
+        }
+    }
+    json_object_object_add(reply, "subscribed", json_object_new_boolean(subscribed));
 
     result = false;
 
@@ -1818,7 +1978,7 @@ Set display properties.
 \param client Client ID.
 \param powerKeyBlock Block the power key. Requires \e client parameter to be set.
 \param timeout Timeout in seconds for the display to turn off.
-\param onWhenConnected Should the display remain on when a USB cable is connected to the device.
+\param onWhenConnected Should the display remain on while any charger (USB, wall or dock) is connected to the device.
 \param maximumBrightness Display maximum brightness.
 \param proximityEnabled Toggle proximity sensor. Requires \e client parameter to be set.
 
@@ -1978,18 +2138,9 @@ bool DisplayManager::controlSetProperty(LSHandle *sh, LSMessage *message, void *
         if (dm->m_onWhenConnected != onWhenConnected)
         {
             dm->m_onWhenConnected = onWhenConnected;
-            // if the usb is connected and since value is changing
-            // make sure that we block transition changes
-            // and note with an id why we do block the state changes.
-            if (CHARGER_USB & dm->m_chargerConnected)
-            {
-                gchar *report = g_strdup_printf ("%s-dm-usb-charger-connected", __FUNCTION__);
-                if (dm->m_onWhenConnected)
-                    dm->pushDNAST (report);
-                else
-                    dm->popDNAST (report);
-                g_free (report);
-            }
+            // apply (or drop) the "stay on while charging" hold right away
+            // if a charger is currently connected
+            dm->updateChargerDNAST ();
         }
     }
     else
@@ -2382,9 +2533,21 @@ bool DisplayManager::controlStatus(LSHandle *sh, LSMessage *message, void *ctx)
         subscribed = false;
     }
 
+    // "state" is what sleepd keys its suspend decision on ("off" lets the
+    // device suspend, "on"/"dimmed" keep it awake):
+    // - Off and OffSuspended are the only states where the display is off
+    //   with nothing keeping the device up; OffSuspended is Off with the
+    //   device already suspended, so it reports "off" too instead of
+    //   "undefined".
+    // - OffOnCall reports "on" on purpose: the panel is dark because the
+    //   proximity sensor is covered during a call, but the device must
+    //   stay awake for the call. allowSuspend() vetoes suspend in that
+    //   state as well.
+    // - DockMode and OnPuck are on (a docked device shows the dock UI).
     if (DisplayStateDim == dm->currentState())
         state = "dimmed";
-    else if (DisplayStateOff == dm->currentState())
+    else if (DisplayStateOff == dm->currentState()
+            || DisplayStateOffSuspended == dm->currentState())
         state = "off";
     else if (DisplayStateOn == dm->currentState()
             || DisplayStateOnLocked == dm->currentState()
@@ -2636,6 +2799,21 @@ DisplayManager::~DisplayManager()
         delete m_alertTimer;
         m_alertTimer = NULL;
     }
+    if (m_watchdog) {
+        m_watchdog->stop();
+        delete m_watchdog;
+        m_watchdog = NULL;
+    }
+    if (m_bannerWakeTimer) {
+        m_bannerWakeTimer->stop();
+        delete m_bannerWakeTimer;
+        m_bannerWakeTimer = NULL;
+    }
+    if (m_compositorTimer) {
+        m_compositorTimer->stop();
+        delete m_compositorTimer;
+        m_compositorTimer = NULL;
+    }
 
     // Clean up AmbientLightSensor
     delete m_als;
@@ -2686,13 +2864,41 @@ void DisplayManager::markBootFinished(bool finished)
     if (finished) {
         // If boot was already finished before we have to deal with a restart of the
         // whole UI hére and therefore turning on the display
-        if (m_bootFinished)
+        if (m_bootFinished) {
             on();
-
-        m_bootFinished = true;
+        }
+        else {
+            m_bootFinished = true;
+            // Every state timeout bails out (single-shot, no re-arm) while
+            // boot is not finished, so whatever timer expired during boot
+            // is gone by now. Re-arm the active state's timer so the
+            // display cannot stay on forever after a slow boot.
+            g_message ("%s: boot finished, re-arming inactivity timer", __PRETTY_FUNCTION__);
+            m_currentState->startInactivityTimer();
+        }
         // Update compass with correct lat/long
         requestCurrentLocation();
     }
+}
+
+void DisplayManager::slotPostMaximumBrightness(int brightness)
+{
+    LSError lserror;
+    LSErrorInit(&lserror);
+    bool result = true;
+
+    gchar *payload = g_strdup_printf(
+            "{\"returnValue\":true,\"subscribed\":true,\"maximumBrightness\":%i}",
+            brightness);
+
+    if (NULL != payload)
+        result = LSSubscriptionReply(m_service, "/control/getProperty", payload,
+                &lserror);
+    if (!result) {
+        LSErrorPrint(&lserror, stderr);
+        LSErrorFree(&lserror);
+    }
+    g_free(payload);
 }
 
 void DisplayManager::slotShowIME()
@@ -2794,23 +3000,11 @@ bool DisplayManager::updateState (int eventType)
             break;
         case DISPLAY_EVENT_USB_CHARGER_DISCONNECTED:
             {
-                if (m_onWhenConnected)
-                {
-                    gchar *report = g_strdup_printf ("%s-dm-usb-charger-connected", __FUNCTION__);
-                    popDNAST (report);
-                    g_free (report);
-                }
                 m_currentState->handleEvent (DisplayEventUsbOut);
             }
             break;
         case DISPLAY_EVENT_USB_CHARGER_CONNECTED:
             {
-                if (m_onWhenConnected)
-                {
-                    gchar *report = g_strdup_printf ("%s-dm-usb-charger-connected", __FUNCTION__);
-                    pushDNAST (report);
-                    g_free (report);
-                }
                 m_currentState->handleEvent (DisplayEventUsbIn);
             }
             break;
@@ -2895,6 +3089,50 @@ bool DisplayManager::activity()
     }
 
     return false;
+}
+
+// Re-arm the current state's inactivity timer after one of its inputs
+// (charger, call/proximity, DNAST, boot state) changed. States that have
+// no inactivity timer (Off, OffOnCall, DockMode, OffSuspended) only
+// refresh m_lastEvent, so this is safe to call from any state.
+void DisplayManager::rearmInactivityTimer()
+{
+    g_debug ("%s: state %d", __PRETTY_FUNCTION__, currentState());
+    m_currentState->startInactivityTimer();
+}
+
+int DisplayManager::watchdogPeriod() const
+{
+    // Half the off timeout so a lost timer costs at most one extra half
+    // period, but never busier than every 5 s.
+    return std::max (m_offTimeout / 2, WATCHDOG_MIN_PERIOD_MS);
+}
+
+// Inactivity watchdog.
+//
+// All state timers are single-shot: the timeout handlers return false and
+// only re-arm the timer themselves while there is idle time left. A number
+// of paths let the expiry slip through without a re-arm (timeout while
+// boot was not finished, DNAST push/pop races, a call or charger flag that
+// changed under a running timer, a preference change, ...). Once that
+// happens nothing ever brings the display to Dim/Off again and sleepd
+// never sees "off".
+//
+// Instead of chasing every such path, this periodic timer (period
+// watchdogPeriod(), i.e. max(offTimeout/2, 5 s)) asks the current state to
+// check its own timer. A state that has an inactivity timer and finds it
+// NOT running while it should be calls its own timeout handler, which
+// compares now against m_lastEvent + the state's timeout: either it
+// re-arms the timer for the remaining idle time or it performs the
+// overdue transition (On -> Dim, Dim/OnLocked -> Off, OnPuck -> DockMode)
+// right away. States without a timer, DNAST, and "boot not finished" are
+// no-ops here, exactly as they are for the real timers.
+bool DisplayManager::inactivityWatchdog()
+{
+    if (m_bootFinished && !isDNAST())
+        m_currentState->checkInactivityTimer();
+
+    return true; // periodic
 }
 
 bool DisplayManager::slider()
@@ -3034,11 +3272,15 @@ void DisplayManager::backlightOff()
     changeVsyncControl(false);
 
     LedControl* lcKeypadAndDisplay = HostBase::instance()->getLedControlKeypadAndDisplay();
-    if (NULL == lcKeypadAndDisplay)
+    if (NULL == lcKeypadAndDisplay) {
         g_message("%s: LedControlKeypadAndDisplay returns NULL", __PRETTY_FUNCTION__);
+        // no backlight controller: treat the backlight as off right away so
+        // the panel still gets blanked and suspend is not vetoed forever
+        backlightOffCallback(this);
+        return;
+    }
 
-    if (lcKeypadAndDisplay)
-        lcKeypadAndDisplay->setBrightness(0, -1, &DisplayManager::backlightOffCallback, this);
+    lcKeypadAndDisplay->setBrightness(0, -1, &DisplayManager::backlightOffCallback, this);
 }
 
 void DisplayManager::backlightOffCallback (void *ctx)
@@ -3046,23 +3288,123 @@ void DisplayManager::backlightOffCallback (void *ctx)
     g_message("%s setting m_backlightIsOn to false", __PRETTY_FUNCTION__);
     DisplayManager *dm = (DisplayManager *)ctx;
     dm->m_backlightIsOn = false;
+
+    // backlight is at zero: now really power the panel down. Only if the
+    // display is still meant to be off (a power key press may have raced us).
+    if (!dm->m_displayOn)
+        dm->updateCompositorDisplayState(false);
 }
 
-/* FIXME this needs rework somehow for luna-surfacemanager
-void DisplayManager::updateCompositorDisplayState(bool on, LSMethodFunction cb , void *context)
+// Panel power through the compositor.
+//
+// "Display off" used to only zero the backlight; the panel, DSI link and
+// hwcomposer kept running. Besides the power cost, on Halium the kernel's
+// DRM suspend path then blanks the panel itself on every suspend attempt
+// and unblanks it on resume, and on sargo that DSI blank/unblank talks to
+// the touch bus negotiator over QMI, whose IPC wakeup source aborts the
+// very suspend that triggered it. Android never hits this because
+// SurfaceFlinger powers the display off before suspend; we do the same via
+// the compositor: com.webos.surfacemanager/setDisplayState, which ends in
+// QPlatformScreen::setPowerState() (DRM DPMS on eglfs-kms, hwcomposer
+// setPowerMode on Halium).
+//
+// Ordering: off = backlight to zero first (backlightOffCallback), then the
+// panel; on = panel first, then the backlight (displayOnCallback runs from
+// compositorDisplayStateDone). The wait for the compositor's reply is
+// bounded by COMPOSITOR_REPLY_TIMEOUT_MS so a missing or hung compositor
+// can never keep the backlight down or veto suspend for good.
+void DisplayManager::updateCompositorDisplayState(bool on)
 {
-    g_debug("%s: on %d", __PRETTY_FUNCTION__, on);
-
     LSError lserror;
     LSErrorInit(&lserror);
-    if (!LSCall(m_service, "luna://org.webosports.luna/setDisplayState",
-                on ? "{\"state\":\"on\"}" : "{\"state\":\"off\"}",
-                cb, context, NULL, &lserror)) {
-        LSErrorPrint(&lserror, stdout);
-        LSErrorFree(&lserror);
+
+    // drop whatever is still in flight; the newest request wins
+    if (m_compositorTimer->running())
+        m_compositorTimer->stop();
+    if (m_compositorCallToken != LSMESSAGE_TOKEN_INVALID) {
+        LSCallCancel(m_service, m_compositorCallToken, NULL);
+        m_compositorCallToken = LSMESSAGE_TOKEN_INVALID;
     }
+
+    m_compositorPendingOn = on;
+    g_message("%s: asking the compositor to turn the panel %s", __PRETTY_FUNCTION__, on ? "on" : "off");
+
+    if (!LSCallOneReply(m_service, URI_COMPOSITOR_SET_DISPLAY_STATE,
+                        on ? "{\"state\":\"on\"}" : "{\"state\":\"off\"}",
+                        DisplayManager::compositorDisplayStateCallback, this,
+                        &m_compositorCallToken, &lserror)) {
+        LSErrorPrint(&lserror, stderr);
+        LSErrorFree(&lserror);
+        m_compositorCallToken = LSMESSAGE_TOKEN_INVALID;
+        compositorDisplayStateDone(on, false);
+        return;
+    }
+
+    m_compositorTimer->start(COMPOSITOR_REPLY_TIMEOUT_MS);
 }
-*/
+
+bool DisplayManager::compositorDisplayStateCallback(LSHandle *sh, LSMessage *message, void *ctx)
+{
+    DisplayManager *dm = (DisplayManager *)ctx;
+    bool ok = false;
+
+    dm->m_compositorCallToken = LSMESSAGE_TOKEN_INVALID;
+
+    const char *str = LSMessageGetPayload(message);
+    json_object *root = str ? json_tokener_parse(str) : NULL;
+    if (root) {
+        json_object *label = json_object_object_get(root, "returnValue");
+        ok = label && json_object_get_boolean(label);
+        if (!ok)
+            g_warning("%s: compositor refused: %s", __PRETTY_FUNCTION__, str);
+        json_object_put(root);
+    }
+
+    dm->compositorDisplayStateDone(dm->m_compositorPendingOn, ok);
+    return true;
+}
+
+bool DisplayManager::compositorTimeout()
+{
+    g_warning("%s: no reply from the compositor within %d ms, carrying on", __PRETTY_FUNCTION__, COMPOSITOR_REPLY_TIMEOUT_MS);
+    if (m_compositorCallToken != LSMESSAGE_TOKEN_INVALID) {
+        LSCallCancel(m_service, m_compositorCallToken, NULL);
+        m_compositorCallToken = LSMESSAGE_TOKEN_INVALID;
+    }
+    compositorDisplayStateDone(m_compositorPendingOn, false);
+    return false;
+}
+
+void DisplayManager::compositorDisplayStateDone(bool on, bool confirmed)
+{
+    if (m_compositorTimer->running())
+        m_compositorTimer->stop();
+
+    // Whether confirmed or not, this is now our best knowledge of the panel;
+    // a compositor that is absent must not block the backlight or suspend.
+    m_compositorDisplayOn = on;
+    g_message("%s: panel %s (%s)", __PRETTY_FUNCTION__, on ? "on" : "off", confirmed ? "confirmed by compositor" : "unconfirmed");
+
+    // the panel is up: now raise the backlight (unless the display went off
+    // again while we waited)
+    if (on && m_displayOn)
+        displayOnCallback(NULL, NULL, this);
+}
+
+// The compositor (re)started: its panel power state is back to "on", so
+// tell it what we currently want. At boot this is a harmless "on".
+bool DisplayManager::compositorServiceNotification(LSHandle *sh, const char *serviceName, bool connected, void *ctx)
+{
+    DisplayManager *dm = (DisplayManager *)ctx;
+
+    if (connected) {
+        g_message("%s: %s is up, syncing panel power (%s)", __PRETTY_FUNCTION__, serviceName, dm->m_displayOn ? "on" : "off");
+        dm->m_compositorDisplayOn = true;
+        dm->updateCompositorDisplayState(dm->m_displayOn);
+    }
+
+    return true;
+}
 
 void DisplayManager::getBearingInfo(double& latitude, double& longitude)
 {
@@ -3199,6 +3541,24 @@ bool DisplayManager::alertTimerCallback ()
     return false;
 }
 
+bool DisplayManager::bannerWakeCallback ()
+{
+    g_message ("%s: banner still active after %d ms, calling on()", __PRETTY_FUNCTION__, BANNER_WAKE_DELAY_MS);
+    on ();
+    return false;
+}
+
+// The state an alert/banner should hand the display back to once it is
+// gone. OffSuspended is Off with the device suspended underneath: reporting
+// it as Off makes the deactivate path call off(), which OffSuspended turns
+// into "restore Off on resume" instead of leaving the display lit.
+int DisplayManager::alertRestoreState () const
+{
+    if (currentState() == DisplayStateOffSuspended)
+        return DisplayStateOff;
+    return currentState();
+}
+
 void DisplayManager::handleDisplayEvent(DisplayEvent event)
 {
     m_currentState->handleEvent(event);
@@ -3211,13 +3571,26 @@ bool DisplayManager::alert (int state)
     {
         case DISPLAY_BANNER_ACTIVATED:
         case DISPLAY_ALERT_GENERIC_ACTIVATED:
-            m_alertState = currentState();
+            // Legacy behaviour: an alert or banner lights an off display and
+            // ALERT_TIMEOUT / the matching deactivate puts it back to the
+            // state it was in (m_alertState).
+            m_alertState = alertRestoreState();
             if (currentState() != DisplayStateOn
                     && currentState() != DisplayStateOnLocked
                     && currentState() != DisplayStateOnPuck
             && currentState() != DisplayStateDockMode)
             {
                 m_alertTimer->start (ALERT_TIMEOUT);
+                if (state == DISPLAY_BANNER_ACTIVATED)
+                {
+                    // Banners are often dismissed again within milliseconds
+                    // (cardshell pulses one for a charger disconnect); do
+                    // not flash the panel for those, only light it for a
+                    // banner that is still up after BANNER_WAKE_DELAY_MS.
+                    g_message ("%s: banner while display off, deferring on() by %d ms", __PRETTY_FUNCTION__, BANNER_WAKE_DELAY_MS);
+                    m_bannerWakeTimer->start (BANNER_WAKE_DELAY_MS);
+                    return true;
+                }
                 g_message ("%s: calling on due to alert %d", __PRETTY_FUNCTION__, state);
                 return on ();
             }
@@ -3248,6 +3621,8 @@ bool DisplayManager::alert (int state)
             break;
         case DISPLAY_ALERT_GENERIC_DEACTIVATED:
         case DISPLAY_BANNER_DEACTIVATED:
+            if (m_bannerWakeTimer->running ())
+                m_bannerWakeTimer->stop ();
             if (!m_onCall) {
                 if (m_alertState == DisplayStateOff) {
                     g_message ("%s: calling off due to alert %d", __PRETTY_FUNCTION__, state);
@@ -3263,6 +3638,8 @@ bool DisplayManager::alert (int state)
             m_alertState = DISPLAY_UNDEFINED;
             if (m_alertTimer->running ())
                 m_alertTimer->stop ();
+            if (m_bannerWakeTimer->running ())
+                m_bannerWakeTimer->stop ();
             break;
         default:
             break;
@@ -3690,10 +4067,9 @@ void DisplayManager::displayOn(bool als)
                 notifySubscribers (DISPLAY_EVENT_ON);
         }
 
-        /*FIXME this needs rework for luna-surfacemanager
-        updateCompositorDisplayState(true, &DisplayManager::displayOnCallback, this);
-        */
-        displayOnCallback(NULL, NULL, this);
+        // power the panel up first; the backlight follows from
+        // compositorDisplayStateDone (or after the bounded wait)
+        updateCompositorDisplayState(true);
     }
     else {
         displayOnCallback(NULL, NULL, this);
@@ -3757,14 +4133,9 @@ void DisplayManager::displayOff()
         m_drop_pen = true;
     }
 
-    // whatever the state was, the backlight has to be turned off before we blank the hwcomposer
+    // whatever the state was, the backlight has to be turned off before we
+    // blank the panel; backlightOffCallback sends the compositor request
     displayOffCallback(NULL, NULL, this);
-
-    if (wasDisplayOnBefore) {
-        /* FIXME this needs updating for luna-surfacemanager
-        updateCompositorDisplayState(false, NULL, NULL);
-        */
-    }
 }
 
 bool DisplayManager::displayOffCallback(LSHandle *handle, LSMessage *message, gpointer context)
@@ -3799,8 +4170,10 @@ void DisplayManager::handleTouchEvent()
 
 bool DisplayManager::allowSuspend()
 {
-    // allow suspend when state is off and backlight is really off.
-    return currentState() == DisplayStateOff && !m_backlightIsOn;
+    // allow suspend when state is off, the backlight is really off and the
+    // panel has been powered down (or the compositor wait has expired), so
+    // the kernel does not have to blank/unblank the panel on every attempt.
+    return currentState() == DisplayStateOff && !m_backlightIsOn && !m_compositorDisplayOn;
 }
 
 

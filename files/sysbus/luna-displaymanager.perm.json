@@ -10,7 +10,8 @@
         "audio.operation",
         "auth.query",
         "luna-sysmgr.operation",
-        "sleep.management"
+        "sleep.management",
+        "surfacemanager.display"
     ],
     "com.palm.ambientLightSensor": [
         "database.management",

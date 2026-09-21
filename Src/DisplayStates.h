@@ -135,6 +135,10 @@ class DisplayStateBase {
         void updateLastEvent();
         virtual void stopInactivityTimer();
         virtual void startInactivityTimer();
+        // Called periodically by DisplayManager's inactivity watchdog. A
+        // state with an inactivity timer must run its timeout logic if the
+        // timer is not running (lost); states without one do nothing.
+        virtual void checkInactivityTimer() {}
 
     void displayOn(bool als);
     void displayDim();
@@ -216,6 +220,7 @@ class DisplayOn : public DisplayStateBase {
     bool timeoutInternal();
         void stopInactivityTimer();
         void startInactivityTimer();
+        void checkInactivityTimer();
 };
 
 
@@ -246,6 +251,7 @@ class DisplayOnLocked : public DisplayStateBase {
     bool timeout();
         void stopInactivityTimer();
         void startInactivityTimer();
+        void checkInactivityTimer();
 };
 
 // DisplayDim: device on, display dim, unlocked
@@ -273,6 +279,7 @@ class DisplayDim : public DisplayStateBase {
 
         void stopInactivityTimer();
         void startInactivityTimer();
+        void checkInactivityTimer();
 };
 
 
@@ -300,6 +307,7 @@ class DisplayOnPuck : public DisplayStateBase {
 
         void stopInactivityTimer();
         void startInactivityTimer();
+        void checkInactivityTimer();
 };
 
 
