@@ -75,6 +75,26 @@
 #define JSON_LBS_CURRENTLOCATIONINF        "{\"accuracy\":%i,\"responseTime\":%i}"
 
 #define JSON_SLIDER_STATUS_REQUEST "{\"get\":\"slider\"}"
+
+/* Keypad backlight per ALS region, as a percentage of the brightness the
+ * display would have used.
+ *
+ * The keys follow the light on the opposite curve to the panel: a lit keyboard
+ * earns its drain in the dark and is pointless in daylight, where the legends
+ * are perfectly readable on their own. The panel's own scales (Settings'
+ * BrightnessDarkScale and its siblings, default 10 for dark) dim as the light
+ * drops, which is the right shape for something you look at and the wrong one
+ * for something you look for.
+ *
+ * Constants rather than Settings keys because there are no keypad keys in
+ * luna-sysmgr-common's Settings and this file is not the place to invent a
+ * cross-repository setting; the ratios are the ones the athena-extras keyboard
+ * backlight script used, tuned by hand on a BlackBerry KEY2 (96, 64 and 32 of
+ * that LED's 255 steps).
+ */
+#define KEYPAD_DARK_SCALE     100
+#define KEYPAD_DIM_SCALE       67
+#define KEYPAD_INDOOR_SCALE    33
 #define URI_AUDIOD_STATUS "palm://org.webosports.service.audio/getStatus"
 #define JSON_AUDIOD_SUBSCRIBE "{\"subscribe\":true}"
 
@@ -2388,16 +2408,41 @@ int32_t DisplayManager::getKeypadBrightness()
             b -= 10;
     }
 
-    int region = m_als->getCurrentRegion ();
-
-    switch (region)
+    /* The sensor only decides anything when the user asked for automatic
+     * brightness, because that is also what decides whether it runs at all:
+     * displayOn() starts it only when the preference is set and m_alsDisabled is
+     * clear, so with either against us getCurrentRegion() is either never
+     * updated or the value it held when the sensor last stopped. Acting on that
+     * would dim the keys for a light level nobody measured.
+     *
+     * (getDisplayBrightness() gates on the preference alone and has the same
+     * staleness question against m_alsDisabled. Left as it is rather than
+     * changed from here, where the keypad is the subject.)
+     */
+    if (m_als && Preferences::instance()->isAlsEnabled() && !m_alsDisabled)
     {
-        case ALS_REGION_OUTDOOR:
-        case ALS_REGION_SUNNY:
-            b = 0;
-            break;
-        default:
-            break;
+        switch (m_als->getCurrentRegion ())
+        {
+            case ALS_REGION_OUTDOOR:
+            case ALS_REGION_SUNNY:
+                b = 0;
+                break;
+            case ALS_REGION_INDOOR:
+                b = KEYPAD_INDOOR_SCALE * b / 100;
+                break;
+            case ALS_REGION_DIM:
+                b = KEYPAD_DIM_SCALE * b / 100;
+                break;
+            case ALS_REGION_DARK:
+                b = KEYPAD_DARK_SCALE * b / 100;
+                break;
+            default:
+                /* ALS_REGION_UNDEFINED: no reading yet, or the sensor was
+                 * switched off by a subscriber, which forces this region. The
+                 * keys come on at the user's brightness and settle when the
+                 * first real region arrives. */
+                break;
+        }
     }
 
     if (b > 100)
