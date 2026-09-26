@@ -22,8 +22,6 @@
 
 
 #include "AmbientLightSensor.h"
-#include "HostBase.h"
-#include "InputControl.h"
 
 #include <nyx/client/nyx_sensor_als.h>
 
@@ -123,6 +121,7 @@ AmbientLightSensor::AmbientLightSensor ()
     , m_alsHiddOnline(false)
     , m_als (0)
     , m_alsHandle (NULL)
+    , m_alsNotifier (0)
     , m_alsSampleHead (0)
     , m_alsSampleCount (0)
     , m_alsSum (0.0)
@@ -209,24 +208,35 @@ AmbientLightSensor::AmbientLightSensor ()
      * buckets are sized for an unobstructed sensor, so on a phone whose ALS
      * sits under the cover glass every indoor reading arrives as "Dark".
      */
-    InputControl *alsControl = HostBase::instance()->getInputControlALS();
-
-    if (alsControl)
-        m_alsHandle = alsControl->getHandle();
+    if (nyx_init() == NYX_ERROR_NONE)
+        nyx_device_open(NYX_DEVICE_SENSOR_ALS, "Default", &m_alsHandle);
 
     if (m_alsHandle) {
         /*
-         * HostBase already owns the reader: HostArm::setupInput() puts a
-         * QSocketNotifier on the ALS event source and drains it in
-         * readALSData(). Opening a second notifier on the same descriptor does
-         * not work - whichever handler runs first takes the event and the
-         * other finds an empty queue - so take the reading from its signal
-         * instead. In a daemon with no window that is the only way to see it
-         * at all, since the AlsEvent it posts goes to activeWindow(), which is
-         * null here.
+         * And read it here, rather than through HostBase.
+         *
+         * HostArm::setupInput() used to open this same device, put a
+         * QSocketNotifier on its event source and drain it in readALSData() -
+         * into an AlsEvent posted to QApplication::activeWindow(), which is
+         * null in a windowless daemon, so the reading went nowhere. A second
+         * notifier on the same descriptor was no way out either: whichever
+         * handler ran first took the event and the other found an empty queue.
+         *
+         * luna-sysmgr-common retired that reader (als-calibration, PR #21),
+         * and with it the InputControl and the signal an earlier version of
+         * this file briefly used. So the device is ours to open and ours to
+         * drain, and a notifier of our own now races nothing.
          */
-        connect(HostBase::instance(), SIGNAL(ambientLightReading(int)),
-                this, SLOT(readAlsData(int)));
+        int fd = -1;
+        if (nyx_device_get_event_source(m_alsHandle, &fd) == NYX_ERROR_NONE && fd > 0) {
+            m_alsNotifier = new QSocketNotifier(fd, QSocketNotifier::Read, this);
+            connect(m_alsNotifier, SIGNAL(activated(int)), this, SLOT(drainNyxAls()));
+        } else {
+            g_warning("%s: nyx ALS has no event source; falling back to Qt",
+                      __PRETTY_FUNCTION__);
+            nyx_device_close(m_alsHandle);
+            m_alsHandle = NULL;
+        }
     }
 
     if (!m_alsHandle) {
@@ -262,6 +272,14 @@ AmbientLightSensor::~AmbientLightSensor()
     }
     if (m_als)
         m_als->deleteLater();
+
+    if (m_alsHandle) {
+        /* The notifier is a child of this object and goes with it; the device
+         * has to be given back by hand. */
+        nyx_device_close(m_alsHandle);
+        m_alsHandle = NULL;
+        nyx_deinit();
+    }
 }
 
 void AmbientLightSensor::slotReadingChanged ()
@@ -274,6 +292,30 @@ void AmbientLightSensor::slotReadingChanged ()
 void AmbientLightSensor::readAlsData (int lux)
 {
     updateAlsLux((qreal) lux);
+}
+
+//! \brief Drains every ALS event the device has queued.
+//!
+//! One notifier activation can cover several events, and an event left in the
+//! queue keeps the descriptor readable - so read until it is empty, or the
+//! notifier fires again immediately and forever.
+void AmbientLightSensor::drainNyxAls ()
+{
+    nyx_event_handle_t event_handle = NULL;
+
+    if (!m_alsHandle)
+        return;
+
+    while (nyx_device_get_event(m_alsHandle, &event_handle) == NYX_ERROR_NONE
+           && event_handle != NULL) {
+        int32_t lux = 0;
+
+        if (nyx_sensor_als_event_get_intensity(event_handle, &lux) == NYX_ERROR_NONE)
+            readAlsData((int) lux);
+
+        nyx_device_release_event(m_alsHandle, event_handle);
+        event_handle = NULL;
+    }
 }
 
 /*

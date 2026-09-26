@@ -28,6 +28,7 @@
 #include <luna-service2/lunaservice.h>
 #include <list>
 #include <QAmbientLightSensor>
+#include <QSocketNotifier>
 #include <QTimer>
 
 #include <nyx/nyx_client.h>
@@ -99,6 +100,9 @@ private:
      * identifier but its backend only ever produces a QAmbientLightReading,
      * i.e. the pre-bucketed LightLevel, so lux cannot be had that way. */
     nyx_device_handle_t           m_alsHandle;
+    //! Our own reader on the nyx event source. Nothing else has one since
+    //! luna-sysmgr-common retired HostArm's, so this one sees every event.
+    QSocketNotifier              *m_alsNotifier;
 
     /* Region estimation, as the pre-split luna-sysmgr did it: a running mean
      * over the last ALS_SAMPLE_SIZE readings, compared against per-region
@@ -147,6 +151,7 @@ private:
 private Q_SLOTS:
     void slotReadingChanged ();
     void readAlsData (int lux);
+    void drainNyxAls ();
     void slotLevelSettled ();
     void slotFirstReadingTimeout ();
 };
