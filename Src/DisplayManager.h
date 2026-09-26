@@ -116,6 +116,11 @@ public:
 
     void wakeupDevice(const char *reason);
 
+    /* True when the last resume was caused by the power key rather than by a
+     * timer or the modem - see the implementation for why that has to be asked
+     * of the kernel rather than inferred from the key event. */
+    static bool wokeOnPowerKey();
+
     bool alert (int state);
     uint32_t getCoreNaviBrightness();
 

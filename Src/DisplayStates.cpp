@@ -2211,6 +2211,19 @@ void DisplayOffSuspended::handleEvent (DisplayEvent displayEvent, sptr<Event> ev
     case DisplayEventPowerdSuspend:
         break;
     case DisplayEventPowerdResume:
+        /*
+         * enter() seeds m_restoreState with the state we suspended from, which
+         * is the right answer for a timer or modem wake - the display should
+         * stay off. A power key wake has to end with the display on, but the
+         * press that woke the SoC is swallowed as the wakeup interrupt and
+         * never arrives as a key event, so there is nothing here to raise
+         * m_restoreState. Ask the kernel what woke it instead.
+         */
+        if (m_restoreState == DisplayStateOff && DisplayManager::wokeOnPowerKey()) {
+            m_restoreState = isDisplayUnlocked() ? DisplayStateOn : DisplayStateOnLocked;
+            m_restoreDisplayEvent = DisplayEventPowerKeyPress;
+        }
+
         g_debug ("%s: On resume, restoring to state %d with event %d",
                 __PRETTY_FUNCTION__, (int)m_restoreState, (int)m_restoreDisplayEvent);
         changeDisplayState (m_restoreState, m_restoreDisplayEvent, m_restoreEvent);

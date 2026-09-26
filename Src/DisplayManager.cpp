@@ -75,6 +75,26 @@
 #define JSON_LBS_CURRENTLOCATIONINF        "{\"accuracy\":%i,\"responseTime\":%i}"
 
 #define JSON_SLIDER_STATUS_REQUEST "{\"get\":\"slider\"}"
+
+/* Keypad backlight per ALS region, as a percentage of the brightness the
+ * display would have used.
+ *
+ * The keys follow the light on the opposite curve to the panel: a lit keyboard
+ * earns its drain in the dark and is pointless in daylight, where the legends
+ * are perfectly readable on their own. The panel's own scales (Settings'
+ * BrightnessDarkScale and its siblings, default 10 for dark) dim as the light
+ * drops, which is the right shape for something you look at and the wrong one
+ * for something you look for.
+ *
+ * Constants rather than Settings keys because there are no keypad keys in
+ * luna-sysmgr-common's Settings and this file is not the place to invent a
+ * cross-repository setting; the ratios are the ones the athena-extras keyboard
+ * backlight script used, tuned by hand on a BlackBerry KEY2 (96, 64 and 32 of
+ * that LED's 255 steps).
+ */
+#define KEYPAD_DARK_SCALE     100
+#define KEYPAD_DIM_SCALE       67
+#define KEYPAD_INDOOR_SCALE    33
 #define URI_AUDIOD_STATUS "palm://org.webosports.service.audio/getStatus"
 #define JSON_AUDIOD_SUBSCRIBE "{\"subscribe\":true}"
 
@@ -2328,6 +2348,10 @@ int32_t DisplayManager::getDisplayBrightness()
     if (Preferences::instance()->isAlsEnabled()) {
         int region = m_als->getCurrentRegion ();
 
+        // No reading yet: start dim and let the first reading raise it.
+        if (m_als->awaitingReading ())
+            region = ALS_REGION_DARK;
+
         switch (region)
         {
         case ALS_REGION_OUTDOOR:
@@ -2384,16 +2408,41 @@ int32_t DisplayManager::getKeypadBrightness()
             b -= 10;
     }
 
-    int region = m_als->getCurrentRegion ();
-
-    switch (region)
+    /* The sensor only decides anything when the user asked for automatic
+     * brightness, because that is also what decides whether it runs at all:
+     * displayOn() starts it only when the preference is set and m_alsDisabled is
+     * clear, so with either against us getCurrentRegion() is either never
+     * updated or the value it held when the sensor last stopped. Acting on that
+     * would dim the keys for a light level nobody measured.
+     *
+     * (getDisplayBrightness() gates on the preference alone and has the same
+     * staleness question against m_alsDisabled. Left as it is rather than
+     * changed from here, where the keypad is the subject.)
+     */
+    if (m_als && Preferences::instance()->isAlsEnabled() && !m_alsDisabled)
     {
-        case ALS_REGION_OUTDOOR:
-        case ALS_REGION_SUNNY:
-            b = 0;
-            break;
-        default:
-            break;
+        switch (m_als->getCurrentRegion ())
+        {
+            case ALS_REGION_OUTDOOR:
+            case ALS_REGION_SUNNY:
+                b = 0;
+                break;
+            case ALS_REGION_INDOOR:
+                b = KEYPAD_INDOOR_SCALE * b / 100;
+                break;
+            case ALS_REGION_DIM:
+                b = KEYPAD_DIM_SCALE * b / 100;
+                break;
+            case ALS_REGION_DARK:
+                b = KEYPAD_DARK_SCALE * b / 100;
+                break;
+            default:
+                /* ALS_REGION_UNDEFINED: no reading yet, or the sensor was
+                 * switched off by a subscriber, which forces this region. The
+                 * keys come on at the user's brightness and settle when the
+                 * first real region arrives. */
+                break;
+        }
     }
 
     if (b > 100)
@@ -3918,9 +3967,35 @@ bool DisplayManager::cbDeviceLockModeChanged(LSHandle* handle, LSMessage* messag
 
 bool DisplayManager::updateLockState (DisplayLockState lockState, DisplayState displayState, DisplayEvent displayEvent)
 {
-    bool success = true;
-
     if (lockState != m_lockState) {
+        /*
+         * Decide whether the unlock is allowed *before* committing m_lockState.
+         *
+         * It used to be assigned at the top of this block, ahead of the check
+         * below, so a refused unlock left it reading "unlocked" while the shell
+         * was still showing the lock screen. lock() only posts
+         * DisplayEventLockScreen into the display state machine, which is a
+         * no-op when that machine is already locked, so nothing ever put
+         * m_lockState back. Every later unlock request then compared equal to
+         * the cached state, skipped the switch entirely and returned success
+         * without firing handleLockStateChange - the shell was told nothing and
+         * could not be unlocked again short of restarting the display manager.
+         *
+         * This has to stay inside the "state actually changed" test: hoisting
+         * it out makes the guard run on every no-op unlock request too, and
+         * with unlockRequiresPasscode() stuck true that turns each one into a
+         * spurious lock() instead of the silent success it used to be.
+         */
+        if (DisplayLockUnlocked == lockState &&
+            unlockRequiresPasscode() &&
+            displayEvent != DisplayEventUnlockScreen &&
+            !isOnCall())
+        {
+            g_warning("%s: Can't unlock as we have a passcode set", __PRETTY_FUNCTION__);
+            lock();
+            return false;
+        }
+
         m_lockState = lockState;
         switch (lockState) {
             case DisplayLockLocked:
@@ -3934,17 +4009,8 @@ bool DisplayManager::updateLockState (DisplayLockState lockState, DisplayState d
                 break;
             case DisplayLockUnlocked:
                 {
-                    // If we're going to unlock check first if that requires a passcode or not
-                    if (unlockRequiresPasscode() &&
-                        displayEvent != DisplayEventUnlockScreen &&
-                        !isOnCall())
-                    {
-                        g_warning("%s: Can't unlock as we have a passcode set", __PRETTY_FUNCTION__);
-                        success = false;
-                        lock();
-                        break;
-                    }
-
+                    /* The passcode check already ran above, before m_lockState
+                     * was committed. */
                     g_debug ("%s: firing DISPLAY_UNLOCK_SCREEN", __PRETTY_FUNCTION__);
                     handleLockStateChange(DISPLAY_UNLOCK_SCREEN, displayEvent);
                 }
@@ -3961,7 +4027,7 @@ bool DisplayManager::updateLockState (DisplayLockState lockState, DisplayState d
         }
     }
 
-    return success;
+    return true;
 }
 
 void DisplayManager::handleLockStateChange(int state, int displayEvent)
@@ -4223,6 +4289,132 @@ bool DisplayManager::allowSuspend()
     return currentState() == DisplayStateOff && !m_backlightIsOn && !m_compositorDisplayOn;
 }
 
+
+/* Driver names the power key's interrupt and device go by. gpio-keys covers
+ * the power button on most boards; a PMIC's own power key shows up under its
+ * own name - "pwrkey" on Rockchip and Qualcomm, "mtk-pmic-keys" on MediaTek. */
+static bool isPowerKeyName(const char *name)
+{
+    return strstr(name, "gpio-keys") != NULL ||
+           strstr(name, "pwrkey") != NULL ||
+           strstr(name, "pmic-keys") != NULL;
+}
+
+/**
+ * @brief Is the power key the only thing this board is armed to wake on?
+ */
+static bool onlyPowerKeyCanWake()
+{
+    static const char *dirs[] = {
+        "/sys/devices/platform",
+        NULL
+    };
+
+    int armed = 0;
+    int armedPowerKey = 0;
+
+    for (int d = 0; dirs[d]; d++) {
+        GDir *dir = g_dir_open(dirs[d], 0, NULL);
+
+        if (!dir)
+            continue;
+
+        const gchar *name;
+
+        while ((name = g_dir_read_name(dir)) != NULL) {
+            gchar *path = g_build_filename(dirs[d], name, "power", "wakeup", NULL);
+            gchar *value = NULL;
+
+            if (g_file_get_contents(path, &value, NULL, NULL)) {
+                if (g_str_has_prefix(g_strstrip(value), "enabled")) {
+                    armed++;
+
+                    if (isPowerKeyName(name))
+                        armedPowerKey++;
+                }
+
+                g_free(value);
+            }
+
+            g_free(path);
+        }
+
+        g_dir_close(dir);
+    }
+
+    return armed > 0 && armed == armedPowerKey;
+}
+
+/**
+ * @brief Did the power key bring the device out of suspend?
+ *
+ * The press that wakes the SoC is consumed as the wakeup interrupt and never
+ * reaches userspace: measured on a PinePhone Pro, the kernel logged "PM:
+ * suspend exit" and the first key event arrived three seconds later, from a
+ * second press. A short tap therefore appeared to do nothing, and the device
+ * only woke if the key was still held when the input subsystem came back.
+ *
+ * So the key event cannot be what decides whether to light the display. Ask
+ * the kernel instead which interrupt woke it, and resolve that number to the
+ * driver that owns it. Matching on the name rather than a fixed number keeps
+ * this working on any board - the IRQ number for the same button differs
+ * between devices and between kernels.
+ */
+bool DisplayManager::wokeOnPowerKey()
+{
+    gchar *irqStr = NULL;
+    int irq = 0;
+
+    if (g_file_get_contents("/sys/power/pm_wakeup_irq", &irqStr, NULL, NULL)) {
+        irq = atoi(irqStr);
+        g_free(irqStr);
+    }
+
+    if (irq <= 0) {
+        /*
+         * Not every kernel accounts for what woke it. On a PinePhone Pro
+         * (rk3399) pm_wakeup_irq reads back empty and every wakeup_count in
+         * /sys/kernel/debug/wakeup_sources stays at zero, even across a
+         * resume the power key demonstrably caused.
+         *
+         * Fall back on what the board was armed to wake on. If the only
+         * device permitted to wake it is the power key then the power key is
+         * what woke it, and the press is lost either way. A board that also
+         * arms an RTC or the modem gets no answer here rather than a wrong
+         * one, and behaves as before.
+         */
+        return onlyPowerKeyCanWake();
+    }
+
+    gchar *interrupts = NULL;
+
+    if (!g_file_get_contents("/proc/interrupts", &interrupts, NULL, NULL))
+        return false;
+
+    bool isPowerKey = false;
+    gchar **lines = g_strsplit(interrupts, "\n", -1);
+
+    for (int i = 0; lines && lines[i]; i++) {
+        gchar *colon = strchr(lines[i], ':');
+
+        if (!colon)
+            continue;
+
+        *colon = '\0';
+
+        if (atoi(g_strstrip(lines[i])) != irq)
+            continue;
+
+        /* The tail of the line is the driver name the IRQ was requested with. */
+        isPowerKey = isPowerKeyName(colon + 1);
+        break;
+    }
+
+    g_strfreev(lines);
+    g_free(interrupts);
+
+    return isPowerKey;
+}
 
 void DisplayManager::setSuspended (bool suspended) {
 
