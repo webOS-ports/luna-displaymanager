@@ -114,6 +114,15 @@ public:
     void handleDisplayEvent(DisplayEvent event);
     void handleTouchEvent();
 
+    /*! \brief The user did something that should keep the display awake.
+     *
+     * Undims, and restarts the inactivity timer. Deliberately does not wake a
+     * display that is off: a keyboard in a pocket would then hold the device
+     * awake indefinitely, which is why legacy gated even the home key on a
+     * preference.
+     */
+    void handleUserActivity();
+
     void wakeupDevice(const char *reason);
 
     /* True when the last resume was caused by the power key rather than by a
@@ -144,6 +153,7 @@ public:
     static bool controlLockStatus(LSHandle *sh, LSMessage *message, void *ctx);
     static bool controlSetLockStatus(LSHandle *sh, LSMessage *message, void *ctx);
     static bool controlAlert(LSHandle *sh, LSMessage *message, void *ctx);
+    static bool controlNotifyUserActivity(LSHandle *sh, LSMessage *message, void *ctx);
 
     // service callbacks
     static bool timeoutCallback(LSHandle *sh, LSMessage *message, void *ctx);

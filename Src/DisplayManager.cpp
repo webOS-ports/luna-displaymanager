@@ -177,6 +177,7 @@ static LSMethod privateDisplayMethods[] = {
     {"lockStatus", DisplayManager::controlLockStatus},
     {"setLockStatus", DisplayManager::controlSetLockStatus},
     {"alert", DisplayManager::controlAlert},
+    {"notifyUserActivity", DisplayManager::controlNotifyUserActivity},
     {},
 };
 
@@ -2734,6 +2735,45 @@ bool DisplayManager::controlLockStatus(LSHandle *sh, LSMessage *message, void *c
     return true;
 }
 
+/*! \page com_palm_display_control
+ * \n
+ * \section com_palm_display_control_notify_user_activity notifyUserActivity
+ *
+ * The user is doing something the display manager cannot see for itself, and the
+ * screen should not dim or blank as though the device were idle.
+ *
+ * It exists for typing. Only touch and the power key reach this process as input
+ * - the former from nyx, the latter from nyx's fixed set of custom keys, which
+ * has no room for ordinary keyboard keys - so on a device with a physical
+ * keyboard the screen dimmed and blanked mid-sentence with nothing to say
+ * otherwise. Whoever does see those keys reports them here.
+ *
+ * Takes no arguments, and is cheap enough to call on a key: it sets the last
+ * event time, undims, and restarts the inactivity timer. It will not wake a
+ * display that is off, on purpose - a keyboard pressed against the inside of a
+ * pocket would otherwise hold the device awake indefinitely.
+ *
+ * \code
+ * luna-send -n 1 luna://com.palm.display/control/notifyUserActivity '{}'
+ * \endcode
+ */
+bool DisplayManager::controlNotifyUserActivity(LSHandle *sh, LSMessage *message, void *ctx)
+{
+    LSError lserror;
+    LSErrorInit(&lserror);
+
+    DisplayManager *dm = ((DisplayCallbackCtx_t *)ctx)->ctx;
+
+    dm->handleUserActivity();
+
+    if (!LSMessageReply(sh, message, "{\"returnValue\":true}", &lserror)) {
+        LSErrorPrint(&lserror, stderr);
+        LSErrorFree(&lserror);
+    }
+
+    return true;
+}
+
 bool DisplayManager::controlAlert(LSHandle *sh, LSMessage *message, void *ctx)
 {
     LSError lserror;
@@ -4268,6 +4308,11 @@ bool DisplayManager::displayOffCallback(LSHandle *handle, LSMessage *message, gp
 }
 
 void DisplayManager::handleTouchEvent()
+{
+    handleUserActivity();
+}
+
+void DisplayManager::handleUserActivity()
 {
     m_lastEvent = Time::curTimeMs();
     if (currentState() == DisplayStateDim) {
