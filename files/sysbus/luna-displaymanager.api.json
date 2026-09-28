@@ -8,7 +8,8 @@
         "com.palm.display/control/lockStatus",
         "com.palm.display/control/setLockStatus",
         "com.palm.display/control/alert",
-        "com.palm.ambientLightSensor/control/status"
+        "com.palm.ambientLightSensor/control/status",
+        "com.palm.display/control/notifyUserActivity"
     ],
     "display.query": [
         "com.palm.display/status",
@@ -26,13 +27,15 @@
         "com.palm.display/control/lockStatus",
         "com.palm.display/control/setLockStatus",
         "com.palm.display/control/alert",
-        "com.palm.ambientLightSensor/control/status"
+        "com.palm.ambientLightSensor/control/status",
+        "com.palm.display/control/notifyUserActivity"
     ],
     "service.communication": [
         "com.palm.display/status",
         "com.palm.display/control/status",
         "com.palm.display/control/getProperty",
         "com.palm.display/control/lockStatus",
-        "com.palm.ambientLightSensor/control/status"
+        "com.palm.ambientLightSensor/control/status",
+        "com.palm.display/control/notifyUserActivity"
     ]
 }
