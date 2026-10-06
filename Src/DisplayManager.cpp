@@ -4342,7 +4342,8 @@ static bool isPowerKeyName(const char *name)
 {
     return strstr(name, "gpio-keys") != NULL ||
            strstr(name, "pwrkey") != NULL ||
-           strstr(name, "pmic-keys") != NULL;
+           strstr(name, "pmic-keys") != NULL ||
+           strstr(name, "KEY_POWER") != NULL;
 }
 
 /**
@@ -4390,6 +4391,66 @@ static bool onlyPowerKeyCanWake()
     return armed > 0 && armed == armedPowerKey;
 }
 
+/*
+ * The power key's interrupt count as /proc/interrupts shows it, taken when the display enters OffSuspended.
+ * On a kernel that cannot say which interrupt woke it (no /sys/power/pm_wakeup_irq, as the 3.4 kernels of the
+ * Exynos 5420 tablets), comparing the counter across the suspend is the only direct evidence there is.
+ */
+static bool s_powerKeyIrqKnown = false;
+static unsigned long s_powerKeyIrqCount = 0;
+
+/**
+ * @brief Sum the per-CPU counts of every interrupt line that belongs to the power key.
+ * @return false when /proc/interrupts has no such line.
+ */
+static bool readPowerKeyIrqCount(unsigned long *total)
+{
+    gchar *interrupts = NULL;
+
+    if (!g_file_get_contents("/proc/interrupts", &interrupts, NULL, NULL))
+        return false;
+
+    bool found = false;
+    unsigned long sum = 0;
+    gchar **lines = g_strsplit(interrupts, "\n", -1);
+
+    for (int i = 0; lines && lines[i]; i++) {
+        gchar *colon = strchr(lines[i], ':');
+
+        if (!colon || !isPowerKeyName(colon + 1))
+            continue;
+
+        /* "  530:     16     0  exynos-eint  KEY_POWER": the numbers after the colon are the per-CPU counts. */
+        char *p = colon + 1;
+        char *end = NULL;
+
+        for (;;) {
+            unsigned long n = strtoul(p, &end, 10);
+
+            if (end == p)
+                break;
+
+            sum += n;
+            p = end;
+        }
+
+        found = true;
+    }
+
+    g_strfreev(lines);
+    g_free(interrupts);
+
+    if (found)
+        *total = sum;
+
+    return found;
+}
+
+void DisplayManager::notePowerKeyIrqCount()
+{
+    s_powerKeyIrqKnown = readPowerKeyIrqCount(&s_powerKeyIrqCount);
+}
+
 /**
  * @brief Did the power key bring the device out of suspend?
  *
@@ -4427,7 +4488,18 @@ bool DisplayManager::wokeOnPowerKey()
          * what woke it, and the press is lost either way. A board that also
          * arms an RTC or the modem gets no answer here rather than a wrong
          * one, and behaves as before.
+         *
+         * That guess is wrong where the armed wake sources are not direct children of /sys/devices/platform: the
+         * Exynos 5420 tablets arm the power key there and the RTC, the charger and the Wi-Fi chip further down,
+         * so it concluded "power key" for every wake, and the Wi-Fi interrupt that ends a suspend every 20 seconds
+         * lit the panel for a minute each time. When the power key's own interrupt counter is readable, use it:
+         * the key woke the device if its count moved since the display entered OffSuspended.
          */
+        unsigned long now = 0;
+
+        if (s_powerKeyIrqKnown && readPowerKeyIrqCount(&now))
+            return now != s_powerKeyIrqCount;
+
         return onlyPowerKeyCanWake();
     }
 
