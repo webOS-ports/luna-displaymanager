@@ -4392,56 +4392,93 @@ static bool onlyPowerKeyCanWake()
 }
 
 /*
- * The power key's interrupt count as /proc/interrupts shows it, taken when the display enters OffSuspended.
- * On a kernel that cannot say which interrupt woke it (no /sys/power/pm_wakeup_irq, as the 3.4 kernels of the
- * Exynos 5420 tablets), comparing the counter across the suspend is the only direct evidence there is.
+ * The power key's interrupt count, taken when the display enters OffSuspended. On a kernel that cannot say which
+ * interrupt woke it (no /sys/power/pm_wakeup_irq, as the 3.4 kernels of the Exynos 5420 tablets), comparing that
+ * count across the suspend is the only direct evidence there is.
  */
 static bool s_powerKeyIrqKnown = false;
 static unsigned long s_powerKeyIrqCount = 0;
 
 /**
- * @brief Sum the per-CPU counts of every interrupt line that belongs to the power key.
- * @return false when /proc/interrupts has no such line.
+ * @brief Total interrupt count of every IRQ line that belongs to the power key.
+ *
+ * The lines are found by name in /proc/interrupts, but the counts are taken from the "intr" line of /proc/stat:
+ * /proc/interrupts only has a column for each CPU that is online at the time, and a board that hotplugs CPUs
+ * (the Exynos 5420 tablets run on one core when idle, on four when busy) would see the sum change between the
+ * suspend and the resume without a single interrupt. /proc/stat sums over every CPU.
+ *
+ * @return false when no power key line exists, or /proc/stat has no count for it.
  */
 static bool readPowerKeyIrqCount(unsigned long *total)
 {
     gchar *interrupts = NULL;
-
-    if (!g_file_get_contents("/proc/interrupts", &interrupts, NULL, NULL))
-        return false;
-
+    gchar *stat = NULL;
+    GArray *irqs = g_array_new(FALSE, FALSE, sizeof(guint));
     bool found = false;
-    unsigned long sum = 0;
-    gchar **lines = g_strsplit(interrupts, "\n", -1);
 
-    for (int i = 0; lines && lines[i]; i++) {
-        gchar *colon = strchr(lines[i], ':');
+    if (g_file_get_contents("/proc/interrupts", &interrupts, NULL, NULL)) {
+        gchar **lines = g_strsplit(interrupts, "\n", -1);
 
-        if (!colon || !isPowerKeyName(colon + 1))
-            continue;
+        for (int i = 0; lines && lines[i]; i++) {
+            const gchar *colon = strchr(lines[i], ':');
 
-        /* "  530:     16     0  exynos-eint  KEY_POWER": the numbers after the colon are the per-CPU counts. */
-        char *p = colon + 1;
-        char *end = NULL;
+            if (!colon || !isPowerKeyName(colon + 1))
+                continue;
 
-        for (;;) {
-            unsigned long n = strtoul(p, &end, 10);
+            /* Only numbered lines ("530: ..."): IPI0, Err and the like are not IRQs /proc/stat counts. */
+            char *end = NULL;
+            const guint64 irq = g_ascii_strtoull(lines[i], &end, 10);
 
-            if (end == p)
-                break;
-
-            sum += n;
-            p = end;
+            /* An IRQ number is far below this; the bound keeps the "+ 2" field index below from wrapping. */
+            if (end != lines[i] && end == colon && irq < 65536) {
+                const guint n = (guint) irq;
+                g_array_append_val(irqs, n);
+            }
         }
 
-        found = true;
+        g_strfreev(lines);
+        g_free(interrupts);
     }
 
-    g_strfreev(lines);
-    g_free(interrupts);
+    if (irqs->len > 0 && g_file_get_contents("/proc/stat", &stat, NULL, NULL)) {
+        gchar **lines = g_strsplit(stat, "\n", -1);
 
-    if (found)
-        *total = sum;
+        for (int i = 0; lines && lines[i]; i++) {
+            if (!g_str_has_prefix(lines[i], "intr "))
+                continue;
+
+            /* "intr <total> <irq 0> <irq 1> ...": the count of IRQ n is field n + 2. */
+            gchar **fields = g_strsplit(lines[i], " ", -1);
+            const guint nfields = g_strv_length(fields);
+            unsigned long sum = 0;
+            bool all = true;
+
+            for (guint k = 0; k < irqs->len; k++) {
+                const guint field = g_array_index(irqs, guint, k) + 2;
+
+                if (field >= nfields) {
+                    all = false;
+                    break;
+                }
+
+                sum += strtoul(fields[field], NULL, 10);
+            }
+
+            g_strfreev(fields);
+
+            if (all) {
+                *total = sum;
+                found = true;
+            }
+
+            break;
+        }
+
+        g_strfreev(lines);
+        g_free(stat);
+    }
+
+    g_array_free(irqs, TRUE);
 
     return found;
 }
