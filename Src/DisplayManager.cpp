@@ -4342,7 +4342,8 @@ static bool isPowerKeyName(const char *name)
 {
     return strstr(name, "gpio-keys") != NULL ||
            strstr(name, "pwrkey") != NULL ||
-           strstr(name, "pmic-keys") != NULL;
+           strstr(name, "pmic-keys") != NULL ||
+           strstr(name, "KEY_POWER") != NULL;
 }
 
 /**
@@ -4390,6 +4391,103 @@ static bool onlyPowerKeyCanWake()
     return armed > 0 && armed == armedPowerKey;
 }
 
+/*
+ * The power key's interrupt count, taken when the display enters OffSuspended. On a kernel that cannot say which
+ * interrupt woke it (no /sys/power/pm_wakeup_irq, as the 3.4 kernels of the Exynos 5420 tablets), comparing that
+ * count across the suspend is the only direct evidence there is.
+ */
+static bool s_powerKeyIrqKnown = false;
+static unsigned long s_powerKeyIrqCount = 0;
+
+/**
+ * @brief Total interrupt count of every IRQ line that belongs to the power key.
+ *
+ * The lines are found by name in /proc/interrupts, but the counts are taken from the "intr" line of /proc/stat:
+ * /proc/interrupts only has a column for each CPU that is online at the time, and a board that hotplugs CPUs
+ * (the Exynos 5420 tablets run on one core when idle, on four when busy) would see the sum change between the
+ * suspend and the resume without a single interrupt. /proc/stat sums over every CPU.
+ *
+ * @return false when no power key line exists, or /proc/stat has no count for it.
+ */
+static bool readPowerKeyIrqCount(unsigned long *total)
+{
+    gchar *interrupts = NULL;
+    gchar *stat = NULL;
+    GArray *irqs = g_array_new(FALSE, FALSE, sizeof(guint));
+    bool found = false;
+
+    if (g_file_get_contents("/proc/interrupts", &interrupts, NULL, NULL)) {
+        gchar **lines = g_strsplit(interrupts, "\n", -1);
+
+        for (int i = 0; lines && lines[i]; i++) {
+            const gchar *colon = strchr(lines[i], ':');
+
+            if (!colon || !isPowerKeyName(colon + 1))
+                continue;
+
+            /* Only numbered lines ("530: ..."): IPI0, Err and the like are not IRQs /proc/stat counts. */
+            char *end = NULL;
+            const guint64 irq = g_ascii_strtoull(lines[i], &end, 10);
+
+            /* An IRQ number is far below this; the bound keeps the "+ 2" field index below from wrapping. */
+            if (end != lines[i] && end == colon && irq < 65536) {
+                const guint n = (guint) irq;
+                g_array_append_val(irqs, n);
+            }
+        }
+
+        g_strfreev(lines);
+        g_free(interrupts);
+    }
+
+    if (irqs->len > 0 && g_file_get_contents("/proc/stat", &stat, NULL, NULL)) {
+        gchar **lines = g_strsplit(stat, "\n", -1);
+
+        for (int i = 0; lines && lines[i]; i++) {
+            if (!g_str_has_prefix(lines[i], "intr "))
+                continue;
+
+            /* "intr <total> <irq 0> <irq 1> ...": the count of IRQ n is field n + 2. */
+            gchar **fields = g_strsplit(lines[i], " ", -1);
+            const guint nfields = g_strv_length(fields);
+            unsigned long sum = 0;
+            bool all = true;
+
+            for (guint k = 0; k < irqs->len; k++) {
+                const guint field = g_array_index(irqs, guint, k) + 2;
+
+                if (field >= nfields) {
+                    all = false;
+                    break;
+                }
+
+                sum += strtoul(fields[field], NULL, 10);
+            }
+
+            g_strfreev(fields);
+
+            if (all) {
+                *total = sum;
+                found = true;
+            }
+
+            break;
+        }
+
+        g_strfreev(lines);
+        g_free(stat);
+    }
+
+    g_array_free(irqs, TRUE);
+
+    return found;
+}
+
+void DisplayManager::notePowerKeyIrqCount()
+{
+    s_powerKeyIrqKnown = readPowerKeyIrqCount(&s_powerKeyIrqCount);
+}
+
 /**
  * @brief Did the power key bring the device out of suspend?
  *
@@ -4427,7 +4525,18 @@ bool DisplayManager::wokeOnPowerKey()
          * what woke it, and the press is lost either way. A board that also
          * arms an RTC or the modem gets no answer here rather than a wrong
          * one, and behaves as before.
+         *
+         * That guess is wrong where the armed wake sources are not direct children of /sys/devices/platform: the
+         * Exynos 5420 tablets arm the power key there and the RTC, the charger and the Wi-Fi chip further down,
+         * so it concluded "power key" for every wake, and the Wi-Fi interrupt that ends a suspend every 20 seconds
+         * lit the panel for a minute each time. When the power key's own interrupt counter is readable, use it:
+         * the key woke the device if its count moved since the display entered OffSuspended.
          */
+        unsigned long now = 0;
+
+        if (s_powerKeyIrqKnown && readPowerKeyIrqCount(&now))
+            return now != s_powerKeyIrqCount;
+
         return onlyPowerKeyCanWake();
     }
 

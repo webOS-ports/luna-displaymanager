@@ -1932,6 +1932,9 @@ void DisplayOffSuspended::enter (DisplayState state, DisplayEvent displayEvent, 
     m_restoreState = state;
     m_restoreDisplayEvent = DisplayEventPowerdResume;
     m_restoreEvent = NULL;
+
+    // What the power key's interrupt count is now, to tell on resume whether the key is what woke us.
+    DisplayManager::notePowerKeyIrqCount();
 }
 
 void DisplayOffSuspended::handleEvent (DisplayEvent displayEvent, sptr<Event> event) 

@@ -129,6 +129,7 @@ public:
      * timer or the modem - see the implementation for why that has to be asked
      * of the kernel rather than inferred from the key event. */
     static bool wokeOnPowerKey();
+    static void notePowerKeyIrqCount();
 
     bool alert (int state);
     uint32_t getCoreNaviBrightness();
