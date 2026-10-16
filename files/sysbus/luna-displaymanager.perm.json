@@ -4,7 +4,6 @@
         "database.management",
         "database.operation",
         "location.query",
-        "telephony.management",
         "preferences.systempropertyquery",
         "preferences.operation",
         "audio.operation",

@@ -137,7 +137,6 @@ public:
     // service notifications for services used
     static bool powerdServiceNotification(LSHandle *sh, const char *serviceName, bool connected, void *ctx);
     static bool batteryServiceNotification(LSHandle *sh, const char *serviceName, bool connected, void *ctx);
-    static bool telephonyServiceNotification(LSHandle *sh, const char *serviceName, bool connected, void *ctx);
     static bool audiodServiceNotification(LSHandle *sh, const char *serviceName, bool connected, void *ctx);
     static bool keysServiceNotification(LSHandle *sh, const char *serviceName, bool connected, void *ctx);
     static bool authServiceNotification(LSHandle *sh, const char *serviceName, bool connected, void *ctx);
@@ -340,6 +339,8 @@ private:
     void setTouchpanelMode (bool active);
 
     friend class DisplayStateBase;
+    // tests/unit: reads the state the bus callbacks leave behind.
+    friend struct DisplayManagerTestPeer;
 
     void    changeDisplayState (DisplayState newDisplayState, DisplayState oldDisplayState, DisplayEvent displayEvent, sptr<Event> event);
     bool    updateLockState (DisplayLockState lockState, DisplayState state, DisplayEvent displayEvent);

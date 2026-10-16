@@ -81,7 +81,7 @@ static void parseCommandlineOptions(int argc, char** argv)
         { "ui", 'u', 0, G_OPTION_ARG_STRING, &s_uiStr, "UI type (minimal, luna)", "name" },
         { "logger", 'l', 0, G_OPTION_ARG_STRING, &s_logLevelStr, "log level", "level" },
         { "terminal", 't', 0, G_OPTION_ARG_NONE, &s_useTerminal, "Use terminal for logs", NULL },
-        { NULL }
+        { NULL, 0, 0, G_OPTION_ARG_NONE, NULL, NULL, NULL }
     };
 
     GOptionContext* context = g_option_context_new(NULL);

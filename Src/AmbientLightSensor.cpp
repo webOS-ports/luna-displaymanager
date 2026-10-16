@@ -105,8 +105,8 @@ AmbientLightSensor* AmbientLightSensor::m_instance = NULL;
  *  - \ref com_palm_ambient_light_sensor_control_status
  */
 static LSMethod alsMethods[] = {
-    {"status", AmbientLightSensor::controlStatus},
-    {},
+    {"status", AmbientLightSensor::controlStatus, LUNA_METHOD_FLAGS_NONE},
+    {nullptr, nullptr, LUNA_METHOD_FLAGS_NONE},
 };
 
 AmbientLightSensor::AmbientLightSensor ()
@@ -530,8 +530,6 @@ bool AmbientLightSensor::on ()
     }
 
     m_alsIsOn = true;
-
-    int timeSinceLastReading = Time::curTimeMs() - m_alsLastOff;
 
     setCurrentRegion(ALS_REGION_INDOOR);
 

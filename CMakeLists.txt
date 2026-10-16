@@ -65,12 +65,18 @@ include_directories(
     ${PMLOGLIB_INCLUDE_DIRS}
     ${CMAKE_SOURCE_DIR}/Src)
 
-add_executable(LunaDisplayManager
+# Everything but main(), so tests/ can build the same code against stand-ins
+# for the bus and the hardware.
+add_library(displaymanager-core OBJECT
     Src/AmbientLightSensor.cpp
     Src/DisplayManager.cpp
     Src/DisplayStates.cpp
     Src/InputEventMonitor.cpp
-    Src/SuspendBlocker.cpp
+    Src/SuspendBlocker.cpp)
+target_link_libraries(displaymanager-core PUBLIC Qt::Core Qt::Gui Qt::Widgets Qt::Sensors)
+
+add_executable(LunaDisplayManager
+    $<TARGET_OBJECTS:displaymanager-core>
     Src/Main.cpp)
 
 target_link_libraries(LunaDisplayManager
@@ -88,6 +94,11 @@ target_link_libraries(LunaDisplayManager
     pthread)
 
 webos_build_daemon(NAME LunaDisplayManager)
+
+option(BUILD_TESTING "Build the unit tests in tests/" OFF)
+if (BUILD_TESTING)
+    add_subdirectory(tests)
+endif()
 webos_build_system_bus_files()
 
 # The shared Settings class (LunaSysMgrCommon) still reads /etc/palm/luna.conf;
