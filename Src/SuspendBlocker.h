@@ -33,7 +33,7 @@ class SuspendBlockerBase
 public:
 
     SuspendBlockerBase(GMainLoop* mainLoop);
-    ~SuspendBlockerBase();
+    virtual ~SuspendBlockerBase();
 
 protected:
 

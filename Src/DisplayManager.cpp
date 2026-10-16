@@ -45,26 +45,27 @@
 #include <luna-service2/lunaservice.h>
 
 #include <algorithm>
+#include <climits>
 
 #if defined(HAS_LUNA_PREF)
 #include <lunaprefs.h>
 #endif
 
-#define URI_POWERD_ACTIVITY_START  "palm://com.webos.service.sleep/com/palm/power/activityStart"
-#define URI_POWERD_ACTIVITY_END    "palm://com.webos.service.sleep/com/palm/power/activityEnd"
-#define JSON_POWERD_ACTIVITY_START "{\"id\":\"com.palm.display-lock.timer\",\"duration_ms\":%i}"
-#define JSON_POWERD_ACTIVITY_END   "{\"id\":\"com.palm.display-lock.timer\"}"
-
 #define DISPLAY_APPID "com.palm.display"
-#define URI_PREFS_GET "palm://com.palm.preferences/appProperties/Get"
 #define URI_PREFS_SET "palm://com.palm.preferences/appProperties/setAppProperty"
 
 #define URI_SIGNAL_ADDMATCH "palm://com.palm.lunabus/signal/addmatch"
-#define URI_POWERD_BATTERY_SIGNAL_REQUEST "palm://com.palm.display/com/palm/power/batteryStatusQuery"
-#define URI_CHARGER_SIGNAL_REQUEST "palm://com.palm.display/com/palm/power/chargerStatusQuery"
-#define URI_TELEPHONY_CHARGER_SIGNAL_REQUEST "palm://com.palm.telephony/chargeSourceQuery"
-#define URI_USBDOCK_SIGNAL_REQUEST "palm://com.palm.display/com/palm/power/USBDockStatus"
-#define URI_LBS_GETCURRENTLOC            "palm://com.palm.location/getCurrentPosition"
+// Signals, so the bus delivers them by category and method alone and the
+// service name is only there to say who listens: batteryd answers each with
+// a broadcast of its status signals (chargerStatus and USBDockStatus, or
+// batteryStatus), which it otherwise only sends on a change.
+#define URI_BATTERY_SIGNAL_REQUEST "luna://com.webos.service.battery/com/palm/power/batteryStatusQuery"
+#define URI_CHARGER_SIGNAL_REQUEST "luna://com.webos.service.battery/com/palm/power/chargerStatusQuery"
+// The last position any client got, for the compass's magnetic declination.
+// Nothing is switched on to get it: the declination barely changes across a
+// country, and com.palm.location's getCurrentPosition, which used to start a
+// fix, is gone from the location service.
+#define URI_LBS_GETCACHEDPOS             "luna://com.webos.service.location/getCachedPosition"
 
 #define URI_SLIDER_STATUS_REQUEST "palm://com.palm.keys/switches/status"
 
@@ -72,7 +73,6 @@
 #define JSON_USBDOCK_SIGNAL_ADDMATCH "{\"category\":\"/com/palm/power\",\"method\":\"USBDockStatus\"}"
 #define JSON_BATTERY_SIGNAL_ADDMATCH "{\"category\":\"/com/palm/power\",\"method\":\"batteryStatus\"}"
 #define JSON_SIGNAL_REQUEST "{}"
-#define JSON_LBS_CURRENTLOCATIONINF        "{\"accuracy\":%i,\"responseTime\":%i}"
 
 #define JSON_SLIDER_STATUS_REQUEST "{\"get\":\"slider\"}"
 
@@ -156,8 +156,8 @@ static DisplayCallbackCtx_t privateCtx;
 // when using LSPalmServiceRegisterCategory, the public methods are mirrored
 // in the private methods
 static LSMethod publicDisplayMethods[] = {
-    {"status", DisplayManager::controlStatus},
-    {},
+    {"status", DisplayManager::controlStatus, LUNA_METHOD_FLAGS_NONE},
+    {nullptr, nullptr, LUNA_METHOD_FLAGS_NONE},
 };
 
 /*! \page com_palm_display_control Service API com.palm.display/control/
@@ -169,28 +169,29 @@ static LSMethod publicDisplayMethods[] = {
  * - \ref com_palm_display_control_status
  */
 static LSMethod privateDisplayMethods[] = {
-    {"setState", DisplayManager::controlSetState},
-    {"setProperty", DisplayManager::controlSetProperty},
-    {"getProperty", DisplayManager::controlGetProperty},
-    {"status", DisplayManager::controlStatus},
-//    {"setCallStatus", DisplayManager::controlCallStatus},
-    {"lockStatus", DisplayManager::controlLockStatus},
-    {"setLockStatus", DisplayManager::controlSetLockStatus},
-    {"alert", DisplayManager::controlAlert},
-    {"notifyUserActivity", DisplayManager::controlNotifyUserActivity},
-    {},
+    {"setState", DisplayManager::controlSetState, LUNA_METHOD_FLAGS_NONE},
+    {"setProperty", DisplayManager::controlSetProperty, LUNA_METHOD_FLAGS_NONE},
+    {"getProperty", DisplayManager::controlGetProperty, LUNA_METHOD_FLAGS_NONE},
+    {"status", DisplayManager::controlStatus, LUNA_METHOD_FLAGS_NONE},
+//    {"setCallStatus", DisplayManager::controlCallStatus, LUNA_METHOD_FLAGS_NONE},
+    {"lockStatus", DisplayManager::controlLockStatus, LUNA_METHOD_FLAGS_NONE},
+    {"setLockStatus", DisplayManager::controlSetLockStatus, LUNA_METHOD_FLAGS_NONE},
+    {"alert", DisplayManager::controlAlert, LUNA_METHOD_FLAGS_NONE},
+    {"notifyUserActivity", DisplayManager::controlNotifyUserActivity, LUNA_METHOD_FLAGS_NONE},
+    {nullptr, nullptr, LUNA_METHOD_FLAGS_NONE},
 };
 
 LSSignal displaySignals[] = {
-    { "powerKeyPressed" },
-    {},
+    { "powerKeyPressed", LUNA_SIGNAL_FLAGS_NONE },
+    {nullptr, LUNA_SIGNAL_FLAGS_NONE},
 };
 
+// The queries requestPowerStatus() sends. ls2 delivers a signal whether or
+// not it is declared here, but warns at every send of one that is not.
 LSSignal powerSignals[] = {
-    { "batteryStatusQuery" },
-    { "chargerStatusQuery" },
-    { "USBDockStatus" },
-    {},
+    { "batteryStatusQuery", LUNA_SIGNAL_FLAGS_NONE },
+    { "chargerStatusQuery", LUNA_SIGNAL_FLAGS_NONE },
+    {nullptr, LUNA_SIGNAL_FLAGS_NONE},
 };
 
 DisplayManager::DisplayManager()
@@ -427,13 +428,6 @@ DisplayManager::DisplayManager()
             LSErrorPrint (&lserror, stderr);
             LSErrorFree (&lserror);
         }
-        result = LSRegisterServerStatusEx(m_service, "com.palm.telephony",
-                DisplayManager::telephonyServiceNotification, this, NULL, &lserror);
-        if (!result)
-        {
-            LSErrorPrint (&lserror, stderr);
-            LSErrorFree (&lserror);
-        }
     }
 
     m_instance = this;
@@ -477,8 +471,9 @@ DisplayManager::DisplayManager()
         LPAppCopyValueCJ (prefHandle, "timeout", &object);
         if (object)
         {
-            int timeout = json_object_get_int(json_object_object_get(object, "timeout")) * 1000;
-            setTimeout (timeout);
+            // setTimeout() takes anything out of range for the default.
+            int timeout = json_object_get_int(json_object_object_get(object, "timeout"));
+            setTimeout ((timeout > 0 && timeout <= INT_MAX / 1000) ? timeout * 1000 : 0);
             json_object_put(object);
             object = 0;
         }
@@ -732,6 +727,12 @@ bool DisplayManager::popDNAST(const char *id)
 // and battery state. batteryd answers the *Query signals with its regular
 // chargerStatus / USBDockStatus / batteryStatus signals, which land in the
 // callbacks registered in the constructor.
+//
+// There is no USBDockStatus query: USBDockStatus is batteryd's status
+// signal, and its answer to chargerStatusQuery includes one. Sending
+// USBDockStatus "{}" here, as LunaSysMgr did, reached no one who answers
+// it, only every USBDockStatus listener as an empty status - this daemon
+// and the card shell's charging indicator among them.
 void DisplayManager::requestPowerStatus(LSHandle *sh)
 {
     LSError lserror;
@@ -745,14 +746,7 @@ void DisplayManager::requestPowerStatus(LSHandle *sh)
         LSErrorFree (&lserror);
     }
 
-    result = LSSignalSend(sh, URI_USBDOCK_SIGNAL_REQUEST, JSON_SIGNAL_REQUEST, &lserror);
-    if (!result)
-    {
-        LSErrorPrint (&lserror, stderr);
-        LSErrorFree (&lserror);
-    }
-
-    result = LSSignalSend(sh, URI_POWERD_BATTERY_SIGNAL_REQUEST, JSON_SIGNAL_REQUEST, &lserror);
+    result = LSSignalSend(sh, URI_BATTERY_SIGNAL_REQUEST, JSON_SIGNAL_REQUEST, &lserror);
     if (!result)
     {
         LSErrorPrint (&lserror, stderr);
@@ -783,10 +777,8 @@ bool DisplayManager::powerdServiceNotification(LSHandle *sh, const char *service
 
     if (connected)
     {
-        // Kept for parity with the old powerd contract; batteryd is the
-        // service that actually answers (see batteryServiceNotification).
-        dm->requestPowerStatus (sh);
-
+        // No power status query here: that is batteryd's, and
+        // batteryServiceNotification asks it whenever batteryd appears.
         dm->m_lastEvent = Time::curTimeMs();
         g_message ("%s: calling on()", __PRETTY_FUNCTION__);
         dm->on ();
@@ -797,25 +789,6 @@ bool DisplayManager::powerdServiceNotification(LSHandle *sh, const char *service
     {
         // dont (ever) go to sleep in the emulator
         dm->pushDNAST ("LunaSysMgr-on-Desktop");
-    }
-
-    return true;
-}
-
-bool DisplayManager::telephonyServiceNotification(LSHandle *sh, const char *serviceName, bool connected, void *ctx)
-{
-    LSError lserror;
-    LSErrorInit(&lserror);
-    bool result = true;
-
-    if (connected)
-    {
-        result = LSCall(sh, URI_TELEPHONY_CHARGER_SIGNAL_REQUEST, JSON_SIGNAL_REQUEST, NULL, NULL, NULL, &lserror);
-        if (!result)
-        {
-            LSErrorPrint (&lserror, stderr);
-            LSErrorFree (&lserror);
-        }
     }
 
     return true;
@@ -1807,7 +1780,8 @@ bool DisplayManager::setTimeout (int timeoutInMs)
         timeoutInMs = DEFAULT_TIMEOUT * 1000;
     }
 
-    m_dimTimeout = (timeoutInMs * 2) / 3;
+    // In 64 bits: twice the largest timeout an int holds does not fit one.
+    m_dimTimeout = (int32_t) (((int64_t) timeoutInMs * 2) / 3);
     m_offTimeout = timeoutInMs / 3;
     m_totalTimeout = timeoutInMs;
 
@@ -2008,6 +1982,10 @@ done:
 
     if (reply)
     json_object_put(reply);
+    // The request: leaked on every call, and the card shell's brightness
+    // slider calls this.
+    if (root)
+        json_object_put(root);
 
     if(!result)
     {
@@ -2018,6 +1996,13 @@ done:
     return true;
 }
 
+
+// A number, as the property's value: json-c reads a string, a boolean or
+// null as 0 (or parses "60" as 60), which would be stored as if asked for.
+static bool isJsonNumber(json_object* o)
+{
+    return json_object_is_type(o, json_type_int) || json_object_is_type(o, json_type_double);
+}
 /*!
 \page com_palm_display_control
 \n
@@ -2104,13 +2089,21 @@ bool DisplayManager::controlSetProperty(LSHandle *sh, LSMessage *message, void *
 
     int timeout = -1;
     bool onWhenConnected = true;
-    int32_t mbr = dm->m_maxBrightness;
+    int32_t mbr = 0;
 
+    // Every step below either succeeds or answers with its error at once:
+    // a failure used to be overwritten by the next property's success, and
+    // the client told returnValue true.
+    errorCode = 3;
+    errorText = "payload is not a JSON object";
     if (!str)
         goto done;
     root = json_tokener_parse(str);
-    if (!root)
+    if (!root || !json_object_is_type(root, json_type_object))
         goto done;
+    errorCode = 0;
+    errorText = NULL;
+    result = true;
 
     label = json_object_object_get(root, "requestBlock");
     if (json_object_get_boolean(label))
@@ -2130,6 +2123,7 @@ bool DisplayManager::controlSetProperty(LSHandle *sh, LSMessage *message, void *
             errorCode = 25;
             errorText = "failed to subscribe";
             LSErrorFree (&lserror);
+            goto done;
         }
         else
         {
@@ -2138,8 +2132,6 @@ bool DisplayManager::controlSetProperty(LSHandle *sh, LSMessage *message, void *
             g_free (clientID);
         }
     }
-    else
-        result = true;
 
     label = json_object_object_get(root, "powerKeyBlock");
     if (json_object_get_boolean(label))
@@ -2159,19 +2151,37 @@ bool DisplayManager::controlSetProperty(LSHandle *sh, LSMessage *message, void *
             errorCode = 25;
             errorText = "failed to subscribe";
             LSErrorFree (&lserror);
+            goto done;
         }
         else
         {
             dm->m_blockedPowerKey++;
         }
     }
-    else
-        result = true;
 
     label = json_object_object_get(root, "timeout");
+    if (label && !isJsonNumber(label)) {
+        errorCode = 43;
+        errorText = "'timeout' must be a number of seconds";
+        result = false;
+        goto done;
+    }
     timeout = json_object_get_int(label);
     if (label && timeout != -1)
     {
+        // Seconds, kept in milliseconds. -1 leaves the timeout as it is and
+        // 0 is the default; anything else below that has no meaning and is
+        // refused. Too long is the longest there is: more than an int holds
+        // once multiplied used to wrap (signed overflow) and land on the
+        // default timeout without a word.
+        if (timeout < 0) {
+            errorCode = 43;
+            errorText = "failed to set timeout values";
+            result = false;
+            goto done;
+        }
+        if (timeout > INT_MAX / 1000)
+            timeout = INT_MAX / 1000;
         result = dm->updateTimeout(timeout * 1000);
         if (!result) {
             errorCode = 43;
@@ -2180,8 +2190,6 @@ bool DisplayManager::controlSetProperty(LSHandle *sh, LSMessage *message, void *
             goto done;
         }
     }
-    else
-        result = true;
 
     label = json_object_object_get(root, "onWhenConnected");
     if (label)
@@ -2211,23 +2219,28 @@ bool DisplayManager::controlSetProperty(LSHandle *sh, LSMessage *message, void *
             dm->updateChargerDNAST ();
         }
     }
-    else
-        result = true;
 
     label = json_object_object_get(root, "maximumBrightness");
+    if (label && !isJsonNumber(label)) {
+        errorCode = 53;
+        errorText = "'maximumBrightness' must be a number";
+        result = false;
+        goto done;
+    }
+    // Out of range is taken as the nearest end: below the minimum is the
+    // minimum, above 100 is 100 (setMaximumBrightness bounds it).
     mbr = json_object_get_int(label);
     if (label)
     {
+        // Subscribers are told by setMaximumBrightness, with the value it
+        // kept rather than the one asked for.
         result = dm->setMaximumBrightness (mbr);
         if(!result) {
             errorCode = 54;
             errorText = "failed to store maximumBrightness in preferences";
+            goto done;
         }
-
-        Q_EMIT dm->signalDisplayMaxBrightnessChanged(mbr);
     }
-    else
-        result = true;
 
     label = json_object_object_get(root, "proximityEnabled");
     if (json_object_get_boolean(label))
@@ -2247,6 +2260,7 @@ bool DisplayManager::controlSetProperty(LSHandle *sh, LSMessage *message, void *
             errorCode = 25;
             errorText = "failed to subscribe";
             LSErrorFree (&lserror);
+            goto done;
         }
         else
         {
@@ -2256,8 +2270,6 @@ bool DisplayManager::controlSetProperty(LSHandle *sh, LSMessage *message, void *
             dm->m_proximityCount++;
         }
     }
-    else
-        result = true;
 
 done:
 
@@ -2468,23 +2480,27 @@ bool DisplayManager::setMaximumBrightness (int maxBrightness, bool save)
 
     maxBrightness = qBound(MINIMUM_ON_BRIGHTNESS, maxBrightness, 100);
 
+    // The new value is kept whatever the display is doing: in the other
+    // states (the lock screen, dimmed, off) the state applies it, now or
+    // when it next lights the panel. Keeping it only while On used to drop
+    // it, and then store the old value as if it had been asked for.
     if (maxBrightness != m_maxBrightness)
     {
+        m_maxBrightness = maxBrightness;
+
         if(currentState() == DisplayStateOn
             || currentState() == DisplayStateOnPuck
             || currentState() == DisplayStateDockMode) {
-        // set the new max brightness
-        m_maxBrightness = maxBrightness;
-        // update the brightness directly
-        backlightOn (getDisplayBrightness(), getKeypadBrightness());
-        // update navi brightness
-        // // CoreNaviManager::instance()->updateBrightness (getCoreNaviBrightness());
-
-        Q_EMIT signalDisplayMaxBrightnessChanged(maxBrightness);
-    }
-    else {
+            // update the brightness directly
+            backlightOn (getDisplayBrightness(), getKeypadBrightness());
+            // update navi brightness
+            // // CoreNaviManager::instance()->updateBrightness (getCoreNaviBrightness());
+        }
+        else {
             updateBrightness ();
         }
+
+        Q_EMIT signalDisplayMaxBrightnessChanged(maxBrightness);
     }
 
     if(save) {
@@ -3565,10 +3581,13 @@ bool DisplayManager::updateCompassBearingInfo(LSHandle* sh, LSMessage* message, 
     int errCode = -1;
     double latitude = 0.0, longitude = 0.0, currentLatitude = 0.0, currentLongitude = 0.0;
 
-    // {"errorCode": integer, "latitude": double, "longitude": double}
-    VALIDATE_SCHEMA_AND_RETURN(sh,
-                               message,
-                               SCHEMA_3(REQUIRED(errorCode, integer), REQUIRED(latitude, double), REQUIRED(longitude, double)));
+    Q_UNUSED(sh);
+    Q_UNUSED(ctx);
+
+    // A reply, not a request: {"returnValue": true, "errorCode": 0,
+    // "latitude": double, "longitude": double, ...}, or returnValue false with
+    // errorCode 2 while no position has been seen yet. Every field is checked
+    // below, so the reply is not held to a schema that rejects the rest of it.
 
     // if we dont have a valid message just return
     if(!message) {
@@ -3627,6 +3646,8 @@ bool DisplayManager::updateCompassBearingInfo(LSHandle* sh, LSMessage* message, 
     }
 
 error:
+    if (root)
+        json_object_put(root);
     return result;
 }
 
@@ -3645,13 +3666,7 @@ void DisplayManager::requestCurrentLocation()
     LSErrorInit(&lserror);
     bool result;
 
-    static const int kAccuracy = 2;
-    static const int kResponseTime = 3;
-
-    gchar *compassInf = g_strdup_printf (JSON_LBS_CURRENTLOCATIONINF, kAccuracy, kResponseTime);
-
-    // Now request the current location from LBS
-    result = LSCallOneReply (m_service, URI_LBS_GETCURRENTLOC, compassInf, &DisplayManager::updateCompassBearingInfo, this, NULL, &lserror);
+    result = LSCallOneReply (m_service, URI_LBS_GETCACHEDPOS, "{}", &DisplayManager::updateCompassBearingInfo, this, NULL, &lserror);
     if(!result) {
         LSErrorFree(&lserror);
     }

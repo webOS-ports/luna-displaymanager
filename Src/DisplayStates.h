@@ -207,6 +207,7 @@ class DisplayOn : public DisplayStateBase {
         void startInternalInactivityTimer();
     public:
         DisplayOn();
+        ~DisplayOn() { delete m_timerUser; delete m_timerInternal; }
 
     DisplayState state() const { return DisplayStateOn; }
 
@@ -239,6 +240,7 @@ class DisplayOnLocked : public DisplayStateBase {
 
     public:
         DisplayOnLocked();
+        ~DisplayOnLocked() { delete m_timer; }
 
     DisplayState state() const { return DisplayStateOnLocked; }
 
@@ -269,6 +271,7 @@ class DisplayDim : public DisplayStateBase {
 
     public:
         DisplayDim();
+        ~DisplayDim() { delete m_timer; }
     DisplayState state() const { return DisplayStateDim; }
 
     void enter (DisplayState, DisplayEvent, sptr<Event> = NULL);
@@ -295,6 +298,7 @@ class DisplayOnPuck : public DisplayStateBase {
 
     public:
         DisplayOnPuck();
+        ~DisplayOnPuck() { delete m_timer; }
     DisplayState state() const { return DisplayStateOnPuck; }
 
     void enter (DisplayState, DisplayEvent, sptr<Event> = NULL);
@@ -320,6 +324,7 @@ class DisplayOnPuck : public DisplayStateBase {
 class DisplayDockMode : public DisplayStateBase {
     public:
         DisplayDockMode();
+        ~DisplayDockMode() { delete m_timerExit; }
     DisplayState state() const { return DisplayStateDockMode; }
 
     void enter (DisplayState, DisplayEvent, sptr<Event> = NULL);

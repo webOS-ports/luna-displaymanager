@@ -137,7 +137,6 @@ public:
     // service notifications for services used
     static bool powerdServiceNotification(LSHandle *sh, const char *serviceName, bool connected, void *ctx);
     static bool batteryServiceNotification(LSHandle *sh, const char *serviceName, bool connected, void *ctx);
-    static bool telephonyServiceNotification(LSHandle *sh, const char *serviceName, bool connected, void *ctx);
     static bool audiodServiceNotification(LSHandle *sh, const char *serviceName, bool connected, void *ctx);
     static bool keysServiceNotification(LSHandle *sh, const char *serviceName, bool connected, void *ctx);
     static bool authServiceNotification(LSHandle *sh, const char *serviceName, bool connected, void *ctx);
