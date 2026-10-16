@@ -48,6 +48,14 @@ Standard webOS CMake component; depends on Qt (Core, Gui, Widgets,
 Sensors), LunaSysMgrCommon, luna-service2, luna-prefs, nyx, pbnjson,
 json-c and PmLogLib.
 
+Tests
+-----
+
+See [tests/README.md](tests/README.md): gtest unit tests against stand-ins
+for the bus and the hardware (`-DBUILD_TESTING=ON`), the sanitizers and
+valgrind, static analysis, a six-way warning gate (gcc and clang for armv7,
+aarch64 and x86-64), and a run against the daemon on a device.
+
 # Copyright and License Information
 
 Copyright (c) 2008-2013 LG Electronics, Inc.

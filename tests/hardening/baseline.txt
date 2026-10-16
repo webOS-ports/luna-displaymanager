@@ -1,0 +1,88 @@
+# Static-analysis findings that were looked at and are not fixed, with why.
+# static-analysis.sh fails on anything not listed here; line numbers are
+# ignored when matching, so an entry survives code moving around it.
+# Format: <tool>: <file>:<line>: <message>   # <reason>
+
+# by design: the DisplayManager made in main() lives as long as the process
+clang-analyzer: Src/Main.cpp:153: warning: Potential memory leak [cplusplus.NewDeleteLeaks]
+clang-tidy: Src/Main.cpp:153: warning: Potential memory leak [clang-analyzer-cplusplus.NewDeleteLeaks]
+
+# coverage gap, not a defect: the analyzer gave up on this function at the raised budget; the sanitizer runs cover it
+gcc-fanalyzer-O0: Src/AmbientLightSensor.cpp:316:33: warning: terminating analysis (too complex) [-Wanalyzer-too-complex]
+gcc-fanalyzer-O0: Src/AmbientLightSensor.cpp:421:9: warning: terminating analysis (too complex) [-Wanalyzer-too-complex]
+gcc-fanalyzer-O0: Src/DisplayManager.cpp:2265:5: warning: terminating analysis (too complex) [-Wanalyzer-too-complex]
+gcc-fanalyzer-O2: Src/AmbientLightSensor.cpp:316:33: warning: terminating analysis (too complex) [-Wanalyzer-too-complex]
+gcc-fanalyzer-O2: Src/AmbientLightSensor.cpp:421:9: warning: terminating analysis (too complex) [-Wanalyzer-too-complex]
+gcc-fanalyzer-O2: Src/DisplayManager.cpp:2265:5: warning: terminating analysis (too complex) [-Wanalyzer-too-complex]
+
+# false positive: built with -fno-exceptions, so the analyzer lets new return NULL; libstdc++'s operator new aborts instead
+gcc-fanalyzer-O0: Src/AmbientLightSensor.cpp:232:80: warning: use of possibly-NULL 'operator new(16)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
+gcc-fanalyzer-O0: Src/AmbientLightSensor.cpp:243:41: warning: use of possibly-NULL 'operator new(16)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
+gcc-fanalyzer-O0: Src/DisplayManager.cpp:436:37: warning: use of possibly-NULL 'operator new(304)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
+gcc-fanalyzer-O0: Src/DisplayManager.cpp:514:71: warning: use of possibly-NULL 'operator new(16)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
+gcc-fanalyzer-O0: Src/DisplayManager.cpp:515:64: warning: use of possibly-NULL 'operator new(32)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
+gcc-fanalyzer-O0: Src/DisplayManager.cpp:516:70: warning: use of possibly-NULL 'operator new(24)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
+gcc-fanalyzer-O0: Src/DisplayManager.cpp:517:65: warning: use of possibly-NULL 'operator new(24)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
+gcc-fanalyzer-O0: Src/DisplayManager.cpp:518:68: warning: use of possibly-NULL 'operator new(24)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
+gcc-fanalyzer-O0: Src/DisplayManager.cpp:519:70: warning: use of possibly-NULL 'operator new(24)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
+gcc-fanalyzer-O0: Src/DisplayManager.cpp:520:74: warning: use of possibly-NULL 'operator new(32)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
+gcc-fanalyzer-O0: Src/DisplayManager.cpp:913:58: warning: use of possibly-NULL 'operator new(16)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
+gcc-fanalyzer-O0: Src/InputEventMonitor.cpp:38:26: warning: use of possibly-NULL 'operator new(48)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
+gcc-fanalyzer-O0: Src/InputEventMonitor.cpp:62:80: warning: use of possibly-NULL 'operator new(16)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
+gcc-fanalyzer-O0: Src/InputEventMonitor.cpp:84:82: warning: use of possibly-NULL 'operator new(16)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
+gcc-fanalyzer-O0: Src/Main.cpp:151:24: warning: use of possibly-NULL 'operator new(432)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
+gcc-fanalyzer-O2: Src/AmbientLightSensor.cpp:232:80: warning: use of possibly-NULL 'operator new(16)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
+gcc-fanalyzer-O2: Src/AmbientLightSensor.cpp:243:41: warning: use of possibly-NULL 'operator new(16)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
+gcc-fanalyzer-O2: Src/DisplayManager.cpp:436:37: warning: use of possibly-NULL 'operator new(304)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
+gcc-fanalyzer-O2: Src/DisplayManager.cpp:514:71: warning: use of possibly-NULL 'operator new(16)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
+gcc-fanalyzer-O2: Src/DisplayManager.cpp:515:64: warning: use of possibly-NULL 'operator new(32)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
+gcc-fanalyzer-O2: Src/DisplayManager.cpp:516:70: warning: use of possibly-NULL 'operator new(24)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
+gcc-fanalyzer-O2: Src/DisplayManager.cpp:517:65: warning: use of possibly-NULL 'operator new(24)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
+gcc-fanalyzer-O2: Src/DisplayManager.cpp:518:68: warning: use of possibly-NULL 'operator new(24)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
+gcc-fanalyzer-O2: Src/DisplayManager.cpp:519:70: warning: use of possibly-NULL 'operator new(24)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
+gcc-fanalyzer-O2: Src/DisplayManager.cpp:520:74: warning: use of possibly-NULL 'operator new(32)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
+gcc-fanalyzer-O2: Src/DisplayManager.cpp:913:58: warning: use of possibly-NULL 'operator new(16)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
+gcc-fanalyzer-O2: Src/InputEventMonitor.cpp:38:26: warning: use of possibly-NULL 'operator new(48)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
+gcc-fanalyzer-O2: Src/InputEventMonitor.cpp:62:80: warning: use of possibly-NULL 'operator new(16)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
+gcc-fanalyzer-O2: Src/InputEventMonitor.cpp:84:82: warning: use of possibly-NULL 'operator new(16)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
+gcc-fanalyzer-O2: Src/Main.cpp:151:24: warning: use of possibly-NULL 'operator new(432)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
+
+# false positive: the while condition reads it
+clang-analyzer: Src/InputEventMonitor.cpp:130: warning: Although the value stored to 'error' is used in the enclosing expression, the value is never actually read from 'error' [deadcode.DeadStores]
+clang-analyzer: Src/InputEventMonitor.cpp:97: warning: Although the value stored to 'error' is used in the enclosing expression, the value is never actually read from 'error' [deadcode.DeadStores]
+clang-tidy: Src/InputEventMonitor.cpp:130: warning: Although the value stored to 'error' is used in the enclosing expression, the value is never actually read from 'error' [clang-analyzer-deadcode.DeadStores]
+clang-tidy: Src/InputEventMonitor.cpp:97: warning: Although the value stored to 'error' is used in the enclosing expression, the value is never actually read from 'error' [clang-analyzer-deadcode.DeadStores]
+
+# false positive: ~SuspendBlockerBase() frees it; asprintf() failure leaves it NULL
+cppcheck: Src/SuspendBlocker.cpp:56: error: Memory leak: m_name [memleak]
+cppcheck: Src/SuspendBlocker.cpp:68: error: Memory leak: m_name [memleak]
+
+# glib's g_array_index() macro, not our cast
+clang-tidy: Src/DisplayManager.cpp:4447: warning: do not cast 'gchar *' (aka 'char *') to 'guint *' (aka 'unsigned int *') through 'void *'; use reinterpret_cast instead [bugprone-casting-through-void]
+
+# kernel text (/sys/power/pm_wakeup_irq, /proc/interrupts); anything unparsable is 0, which the callers treat as unknown
+clang-tidy: Src/DisplayManager.cpp:4502: warning: 'atoi' used to convert a string to an integer value, but function will not report conversion errors; consider using 'strtol' instead [cert-err34-c]
+clang-tidy: Src/DisplayManager.cpp:4549: warning: 'atoi' used to convert a string to an integer value, but function will not report conversion errors; consider using 'strtol' instead [cert-err34-c]
+flawfinder: Src/DisplayManager.cpp:4502:  [2] (integer) atoi:
+flawfinder: Src/DisplayManager.cpp:4549:  [2] (integer) atoi:
+
+# memset() of a pointer array and GOptionEntry's arg_data, both as the APIs want
+clang-tidy: Src/DisplayManager.cpp:535: warning: multilevel pointer conversion from 'DisplayStateBase **' to 'void *', please use explicit cast [bugprone-multi-level-implicit-pointer-conversion]
+clang-tidy: Src/Main.cpp:81: warning: multilevel pointer conversion from 'gchar **' (aka 'char **') to 'void *', please use explicit cast [bugprone-multi-level-implicit-pointer-conversion]
+clang-tidy: Src/Main.cpp:82: warning: multilevel pointer conversion from 'gchar **' (aka 'char **') to 'void *', please use explicit cast [bugprone-multi-level-implicit-pointer-conversion]
+
+# setTimeout() cannot fail today; the check stays for when it can
+cppcheck: Src/DisplayManager.cpp:1760: style: Condition '!success' is always false [knownConditionTrueFalse]
+
+# strlen of string literals in audiodCallback's prefix compares
+flawfinder: Src/DisplayManager.cpp:1004:  [1] (buffer) strlen:
+flawfinder: Src/DisplayManager.cpp:1005:  [1] (buffer) strlen:
+flawfinder: Src/DisplayManager.cpp:1006:  [1] (buffer) strlen:
+
+# style: sptr<Event> by value as everywhere in the state machine; a copy is a refcount
+clang-tidy: Src/DisplayManager.cpp:1677: warning: the parameter 'event' is copied for each invocation but only used as a const reference; consider making it a const reference [performance-unnecessary-value-param]
+clang-tidy: Src/DisplayManager.cpp:3788: warning: the parameter 'event' is copied for each invocation but only used as a const reference; consider making it a const reference [performance-unnecessary-value-param]
+clang-tidy: Src/DisplayManager.cpp:3804: warning: the parameter 'event' is copied for each invocation but only used as a const reference; consider making it a const reference [performance-unnecessary-value-param]
+clang-tidy: Src/DisplayManager.cpp:3826: warning: the parameter 'event' is copied for each invocation but only used as a const reference; consider making it a const reference [performance-unnecessary-value-param]
+clang-tidy: Src/DisplayManager.cpp:3901: warning: the parameter 'event' is copied for each invocation but only used as a const reference; consider making it a const reference [performance-unnecessary-value-param]
+clang-tidy: Src/DisplayStates.cpp:230: warning: the parameter 'event' is copied for each invocation but only used as a const reference; consider making it a const reference [performance-unnecessary-value-param]

@@ -339,6 +339,8 @@ private:
     void setTouchpanelMode (bool active);
 
     friend class DisplayStateBase;
+    // tests/unit: reads the state the bus callbacks leave behind.
+    friend struct DisplayManagerTestPeer;
 
     void    changeDisplayState (DisplayState newDisplayState, DisplayState oldDisplayState, DisplayEvent displayEvent, sptr<Event> event);
     bool    updateLockState (DisplayLockState lockState, DisplayState state, DisplayEvent displayEvent);
