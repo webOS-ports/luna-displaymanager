@@ -228,6 +228,7 @@ DisplayManager::DisplayManager()
     , m_demo(false)
     , m_bootFinished(false)
     , m_alertState(DISPLAY_UNDEFINED)
+    , m_alertIsCall(false)
     , m_proximityCount(0)
     , m_proximityEnabled(false)
     , m_proximityActivated(false)
@@ -3118,6 +3119,7 @@ bool DisplayManager::updateState (int eventType)
                    if (!(m_onCall && currentState() == DisplayStateOnPuck))
                     {
                         g_message ("%s: power key press", __PRETTY_FUNCTION__);
+                        userTookDisplay();
                         m_currentState->handleEvent (DisplayEventPowerKeyPress);
                     }
                 }
@@ -3724,8 +3726,10 @@ bool DisplayManager::alert (int state)
         case DISPLAY_ALERT_GENERIC_ACTIVATED:
             // Legacy behaviour: an alert or banner lights an off display and
             // ALERT_TIMEOUT / the matching deactivate puts it back to the
-            // state it was in (m_alertState).
+            // state it was in (m_alertState) - unless the user takes the
+            // display over in between; see userTookDisplay().
             m_alertState = alertRestoreState();
+            m_alertIsCall = false;
             if (currentState() != DisplayStateOn
                     && currentState() != DisplayStateOnLocked
                     && currentState() != DisplayStateOnPuck
@@ -3753,6 +3757,7 @@ bool DisplayManager::alert (int state)
             {
                 m_alertTimer->start (ALERT_TIMEOUT);
                 m_alertState = currentState();
+                m_alertIsCall = true;
                 g_message ("%s: calling on due to activated phonecall %d", __PRETTY_FUNCTION__, state);
                 m_currentState->handleEvent (DisplayEventIncomingCall);
             }
@@ -3806,7 +3811,39 @@ void DisplayManager::lock()
 
 void DisplayManager::unlock()
 {
+    userTookDisplay();
     m_currentState->handleEvent(DisplayEventUnlockScreen);
+}
+
+/*
+ * An alert or banner that lights an off display remembers the state to hand
+ * it back to (m_alertState), and does so when it is deactivated or when
+ * ALERT_TIMEOUT runs out. That is right while nobody touches the device: a
+ * banner lights the screen for a moment and it goes dark again.
+ *
+ * It is wrong once the user has picked the device up. The remembered state
+ * outlived the alert that set it: a notification wakes the display, the user
+ * unlocks and uses the device, and when they swipe the last notification
+ * away the cardshell reports banner-deactivated - and the display, still
+ * believing it was lit only for that banner, turned itself off in their
+ * hands. The same happened through the alert timer six seconds after an
+ * alert if the user was already busy.
+ *
+ * So the moment the user acts - touch, a key, the power key, unlocking - the
+ * display is theirs, and the normal inactivity timeouts decide when it goes
+ * off. Incoming calls keep their own rules, on the call's deactivation.
+ */
+void DisplayManager::userTookDisplay()
+{
+    if (m_alertIsCall)
+        return;
+    if (m_alertState != DISPLAY_UNDEFINED)
+        g_message ("%s: user activity, an alert no longer owns the display", __PRETTY_FUNCTION__);
+    m_alertState = DISPLAY_UNDEFINED;
+    if (m_alertTimer && m_alertTimer->running ())
+        m_alertTimer->stop ();
+    if (m_bannerWakeTimer && m_bannerWakeTimer->running ())
+        m_bannerWakeTimer->stop ();
 }
 
 
@@ -4330,6 +4367,7 @@ void DisplayManager::handleTouchEvent()
 void DisplayManager::handleUserActivity()
 {
     m_lastEvent = Time::curTimeMs();
+    userTookDisplay();
     if (currentState() == DisplayStateDim) {
         g_message("%s: sending user activity event", __PRETTY_FUNCTION__);
         m_currentState->handleEvent(DisplayEventUserActivity);

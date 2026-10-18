@@ -36,6 +36,11 @@ struct DisplayManagerTestPeer {
     static void setOnWhenConnected(DisplayManager* dm, bool on) { dm->m_onWhenConnected = on; }
     static DisplayState state(DisplayManager* dm) { return dm->currentState(); }
     static void requestCurrentLocation(DisplayManager* dm) { dm->requestCurrentLocation(); }
+    static int32_t alertState(DisplayManager* dm) { return dm->m_alertState; }
+    static bool alertTimerRunning(DisplayManager* dm) { return dm->m_alertTimer->running(); }
+    // What the main loop would do when the timers expire.
+    static void fireAlertTimer(DisplayManager* dm) { dm->alertTimerCallback(); }
+    static void fireBannerWake(DisplayManager* dm) { dm->bannerWakeCallback(); }
     static bool compassReply(LSHandle* sh, LSMessage* m, void* ctx)
     {
         return DisplayManager::updateCompassBearingInfo(sh, m, ctx);

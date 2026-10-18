@@ -123,6 +123,11 @@ public:
      */
     void handleUserActivity();
 
+    /* The user has taken the display over from an alert or banner that lit
+     * it: what that alert would hand the display back to no longer applies.
+     * See the definition. */
+    void userTookDisplay();
+
     void wakeupDevice(const char *reason);
 
     /* True when the last resume was caused by the power key rather than by a
@@ -269,6 +274,9 @@ private:
     bool           m_bootFinished;
 
     int32_t                m_alertState;
+    /* Whether m_alertState was recorded by an incoming call rather than a
+     * banner or generic alert. Calls keep their own hand-back rules. */
+    bool                   m_alertIsCall;
     int32_t                m_proximityCount;
     bool                   m_proximityEnabled;
     bool                   m_proximityActivated;
