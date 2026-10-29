@@ -42,6 +42,7 @@ getCachedPosition, audiod's getStatus.
 | `test_methods.cpp` | every method against hostile payloads; requestBlock and powerKeyBlock released with their client; failures not overwritten; timeout overflow; maximumBrightness kept in every state, clamped, stored, and posted clamped; values restored at start-up |
 | `test_calls.cpp` | call state from audiod (`inCall`) and the proximity sensor held by the phone app |
 | `test_alerts.cpp` | an alert or banner that lit an off display puts it back to off when it ends, unless the user touched the device, pressed a key or unlocked in between; an incoming call keeps its own rule |
+| `test_unlock.cpp` | with a passcode set, `setLockStatus` and `setState` "unlock" only with a token that `consumeUnlockToken` honours (`{"returnValue":true,"valid":true}` and nothing else), answered after it; refused without one, before authmanager has answered, for a caller with no name, and when a lock came in between; no token needed without a passcode (also under a pending policy); "lock" needs nothing; a pending unlock cancelled on teardown; `com.palm.display` holding `auth.unlocktoken` |
 
 Build and run on the host:
 

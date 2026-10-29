@@ -35,13 +35,15 @@ add_executable(displaymanager-tests
     unit/test_location.cpp
     unit/test_methods.cpp
     unit/test_calls.cpp
-    unit/test_alerts.cpp)
+    unit/test_alerts.cpp
+    unit/test_unlock.cpp)
 
 target_include_directories(displaymanager-tests PRIVATE fakes unit)
 
 # gtest is built with exceptions and RTTI; the daemon is not, which does not
 # matter across the object boundary.
 target_compile_options(displaymanager-tests PRIVATE -frtti -fexceptions -Wextra)
+target_compile_definitions(displaymanager-tests PRIVATE DM_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
 set_target_properties(displaymanager-tests PROPERTIES ENABLE_EXPORTS ON)
 
