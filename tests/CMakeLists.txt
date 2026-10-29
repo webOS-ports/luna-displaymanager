@@ -37,7 +37,8 @@ add_executable(displaymanager-tests
     unit/test_methods.cpp
     unit/test_calls.cpp
     unit/test_alerts.cpp
-    unit/test_keys.cpp)
+    unit/test_keys.cpp
+    unit/test_unlock.cpp)
 
 target_include_directories(displaymanager-tests PRIVATE fakes unit)
 
@@ -47,6 +48,7 @@ target_compile_options(displaymanager-tests PRIVATE -frtti -fexceptions -Wextra)
 # Except for a class derived from one of LunaSysMgrCommon's, which is built
 # without RTTI and so has no typeinfo for its classes to derive from.
 set_source_files_properties(fakes/fakehost.cpp PROPERTIES COMPILE_OPTIONS -fno-rtti)
+target_compile_definitions(displaymanager-tests PRIVATE DM_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
 set_target_properties(displaymanager-tests PROPERTIES ENABLE_EXPORTS ON)
 
