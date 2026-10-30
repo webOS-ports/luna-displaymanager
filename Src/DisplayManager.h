@@ -317,6 +317,17 @@ private:
     // same way until the first reply.
     bool m_passcodeSet = true;
     LSMessageToken m_lockModeCallToken = LSMESSAGE_TOKEN_INVALID;
+    // Whether a getDeviceLockMode reply carrying lockMode has landed yet.
+    bool m_lockModeKnown = false;
+    // An implicit unlock (the boot DisplayOn enter, USB, dock) that was
+    // refused only because the lock mode was not known yet. The first
+    // answer releases it if no passcode is needed and nothing has locked
+    // the device on purpose since (m_lockGeneration still matches and the
+    // state machine is still where the refusal left it).
+    bool m_unlockDeferred = false;
+    uint32_t m_deferredUnlockGeneration = 0;
+    DisplayState m_deferredUnlockState = DisplayStateOff;
+    void releaseDeferredUnlock();
 
     // An unlock waiting for luna-authmanager to spend its token.
     struct PendingUnlock

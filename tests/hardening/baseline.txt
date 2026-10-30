@@ -30,7 +30,7 @@ gcc-fanalyzer-O0: Src/DisplayManager.cpp:913:58: warning: use of possibly-NULL '
 gcc-fanalyzer-O0: Src/InputEventMonitor.cpp:38:26: warning: use of possibly-NULL 'operator new(48)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
 gcc-fanalyzer-O0: Src/InputEventMonitor.cpp:62:80: warning: use of possibly-NULL 'operator new(16)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
 gcc-fanalyzer-O0: Src/InputEventMonitor.cpp:84:82: warning: use of possibly-NULL 'operator new(16)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
-gcc-fanalyzer-O0: Src/Main.cpp:151:24: warning: use of possibly-NULL 'operator new(464)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
+gcc-fanalyzer-O0: Src/Main.cpp:151:24: warning: use of possibly-NULL 'operator new(472)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
 gcc-fanalyzer-O0: Src/DisplayManager.cpp:3893:110: warning: dereference of possibly-NULL 'operator new(40)' [CWE-690] [-Wanalyzer-possible-null-dereference]
 gcc-fanalyzer-O2: Src/AmbientLightSensor.cpp:232:80: warning: use of possibly-NULL 'operator new(16)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
 gcc-fanalyzer-O2: Src/AmbientLightSensor.cpp:243:41: warning: use of possibly-NULL 'operator new(16)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
@@ -46,7 +46,7 @@ gcc-fanalyzer-O2: Src/DisplayManager.cpp:913:58: warning: use of possibly-NULL '
 gcc-fanalyzer-O2: Src/InputEventMonitor.cpp:38:26: warning: use of possibly-NULL 'operator new(48)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
 gcc-fanalyzer-O2: Src/InputEventMonitor.cpp:62:80: warning: use of possibly-NULL 'operator new(16)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
 gcc-fanalyzer-O2: Src/InputEventMonitor.cpp:84:82: warning: use of possibly-NULL 'operator new(16)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
-gcc-fanalyzer-O2: Src/Main.cpp:151:24: warning: use of possibly-NULL 'operator new(464)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
+gcc-fanalyzer-O2: Src/Main.cpp:151:24: warning: use of possibly-NULL 'operator new(472)' where non-null expected [CWE-690] [-Wanalyzer-possible-null-argument]
 gcc-fanalyzer-O2: Src/DisplayManager.cpp:3893:110: warning: dereference of possibly-NULL 'operator new(40)' [CWE-690] [-Wanalyzer-possible-null-dereference]
 
 # false positive: the while condition reads it

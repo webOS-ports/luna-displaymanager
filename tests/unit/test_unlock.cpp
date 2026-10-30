@@ -328,3 +328,117 @@ TEST(DisplayAcg, TheDisplayManagerMaySpendTokens)
     EXPECT_EQ(held.count("auth.unlocktoken"), 1u);
     json_object_put(perm);
 }
+
+/*
+ * At boot the display state machine enters DisplayOn, which unlocks, before
+ * luna-authmanager has answered getDeviceLockMode. That unlock is refused
+ * (a passcode might be set) and turned into a lock. Once the answer says
+ * there is no passcode, the refused unlock has to happen: nothing else asks
+ * again (the shell shows no lock screen with no passcode and First Use),
+ * and the device used to stay "locked" for good, which devmode and the MTP
+ * gate then believed.
+ */
+class EarlyUnlockTest : public UnlockTest {
+protected:
+    // The boot path: the constructor enters DisplayOn (DisplayEventApiOn)
+    // before luna-authmanager has answered getDeviceLockMode, so that unlock
+    // is refused and turned into a lock.
+    void bootOnBeforeAuthAnswers()
+    {
+        ASSERT_EQ(Peer::state(dm), DisplayStateOnLocked);
+        ASSERT_EQ(Peer::lockState(dm), DisplayLockLocked) << "the early unlock is refused";
+    }
+};
+
+TEST_F(EarlyUnlockTest, NoPasscodeTheRefusedUnlockHappensOnceAuthmanagerAnswers)
+{
+    bootOnBeforeAuthAnswers();
+    authSays("none");
+    EXPECT_EQ(Peer::lockState(dm), DisplayLockUnlocked);
+    EXPECT_EQ(Peer::state(dm), DisplayStateOn);
+}
+
+TEST_F(EarlyUnlockTest, WithAPasscodeItStaysLocked)
+{
+    for (const char* mode : { "pin", "password", "pattern", "something-new" }) {
+        TearDown();
+        SetUp();
+        bootOnBeforeAuthAnswers();
+        authSays(mode);
+        EXPECT_EQ(Peer::lockState(dm), DisplayLockLocked) << mode;
+    }
+}
+
+TEST_F(EarlyUnlockTest, APendingPolicyThatWantsAPasscodeKeepsItLocked)
+{
+    bootOnBeforeAuthAnswers();
+    authSays("none", "pending", true);
+    EXPECT_EQ(Peer::lockState(dm), DisplayLockLocked);
+}
+
+TEST_F(EarlyUnlockTest, ALockMeanwhileWins)
+{
+    bootOnBeforeAuthAnswers();
+    lockIt();
+    authSays("none");
+    EXPECT_EQ(Peer::lockState(dm), DisplayLockLocked);
+}
+
+TEST_F(EarlyUnlockTest, AnAnswerWithoutTheStateChangesNothing)
+{
+    bootOnBeforeAuthAnswers();
+    fakebus::setServiceUp("com.palm.systemmanager", true);
+    auto c = fakebus::callsTo(kLockMode);
+    ASSERT_FALSE(c.empty());
+    ASSERT_TRUE(fakebus::reply(c.back().token, "{\"returnValue\":false,\"errorText\":\"gone\"}"));
+    EXPECT_EQ(Peer::lockState(dm), DisplayLockLocked);
+    // ...and the real answer, when it comes, still lets the device in.
+    authSays("none");
+    EXPECT_EQ(Peer::lockState(dm), DisplayLockUnlocked);
+}
+
+TEST_F(EarlyUnlockTest, OnlyTheFirstAnswerReleasesIt)
+{
+    // Known to have a passcode, then the passcode is removed: removing it
+    // does not unlock a device that is locked now.
+    bootOnBeforeAuthAnswers();
+    authSays("pin");
+    ASSERT_EQ(Peer::lockState(dm), DisplayLockLocked);
+    auto c = fakebus::callsTo(kLockMode);
+    ASSERT_TRUE(fakebus::reply(c.back().token,
+        "{\"returnValue\":true,\"lockMode\":\"none\",\"policyState\":\"none\",\"policyRequiresPassword\":false}"));
+    EXPECT_EQ(Peer::lockState(dm), DisplayLockLocked);
+}
+
+TEST_F(EarlyUnlockTest, AnUnlockOnceTheAnswerIsKnownIsNotDeferred)
+{
+    authSays("pin");
+    // Off, then a USB plug lights it: DisplayOn's implicit unlock is refused,
+    // and with the answer known that refusal is final - removing the
+    // passcode later does not replay it.
+    auto r = call("/control", "setState", "{\"state\":\"off\"}", false, kShell);
+    ASSERT_FALSE(r.replies.empty());
+    ASSERT_EQ(Peer::state(dm), DisplayStateOff);
+    fakebus::emitSignal("/com/palm/power", "chargerStatus",
+        "{\"type\":\"usb\",\"name\":\"usb\",\"connected\":true,\"current_mA\":500,\"message_source\":\"batteryd\"}");
+    ASSERT_EQ(Peer::state(dm), DisplayStateOnLocked);
+    ASSERT_EQ(Peer::lockState(dm), DisplayLockLocked);
+    auto c = fakebus::callsTo(kLockMode);
+    ASSERT_TRUE(fakebus::reply(c.back().token,
+        "{\"returnValue\":true,\"lockMode\":\"none\",\"policyState\":\"none\",\"policyRequiresPassword\":false}"));
+    EXPECT_EQ(Peer::lockState(dm), DisplayLockLocked);
+}
+
+TEST_F(EarlyUnlockTest, TheDisplayGoingOffMeanwhileDropsIt)
+{
+    // The answer must not light up and unlock a display that was turned off
+    // while it was outstanding.
+    bootOnBeforeAuthAnswers();
+    auto r = call("/control", "setState", "{\"state\":\"off\"}", false, kShell);
+    ASSERT_FALSE(r.replies.empty());
+    ASSERT_NE(Peer::state(dm), DisplayStateOnLocked);
+    const auto before = Peer::state(dm);
+    authSays("none");
+    EXPECT_EQ(Peer::lockState(dm), DisplayLockLocked);
+    EXPECT_EQ(Peer::state(dm), before);
+}
