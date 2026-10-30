@@ -35,6 +35,7 @@ struct DisplayManagerTestPeer {
     static bool chargerHold(DisplayManager* dm) { return dm->m_chargerDNASTHeld; }
     static void setOnWhenConnected(DisplayManager* dm, bool on) { dm->m_onWhenConnected = on; }
     static DisplayState state(DisplayManager* dm) { return dm->currentState(); }
+    static bool backlightOn(DisplayManager* dm) { return dm->m_backlightIsOn; }
     static void requestCurrentLocation(DisplayManager* dm) { dm->requestCurrentLocation(); }
     static int32_t alertState(DisplayManager* dm) { return dm->m_alertState; }
     static bool alertTimerRunning(DisplayManager* dm) { return dm->m_alertTimer->running(); }

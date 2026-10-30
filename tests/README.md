@@ -23,7 +23,8 @@ there on the build host:
   (`callMethod`) and makes a client go away (`dropSubscriber`, which runs
   the subscription cancel function once per message, as ls2 does).
 - `fakes/fakehw.cpp`: nyx (records the backlight levels and the compass
-  location) and luna-prefs (an in-memory store).
+  location, and hands out key events a test queues on the keys device) and
+  luna-prefs (an in-memory store).
 
 The stand-ins are exported from the test executable, so they win over the
 real libraries for LunaSysMgrCommon too, which still loads them as its own
@@ -42,6 +43,7 @@ getCachedPosition, audiod's getStatus.
 | `test_methods.cpp` | every method against hostile payloads; requestBlock and powerKeyBlock released with their client; failures not overwritten; timeout overflow; maximumBrightness kept in every state, clamped, stored, and posted clamped; values restored at start-up |
 | `test_calls.cpp` | call state from audiod (`inCall`) and the proximity sensor held by the phone app |
 | `test_alerts.cpp` | an alert or banner that lit an off display puts it back to off when it ends, unless the user touched the device, pressed a key or unlocked in between; an incoming call keeps its own rule while it rings, and its claim ends with the call (a missed call then does not switch the display off under the user) |
+| `test_keys.cpp` | the power key from the nyx keys device switches the display off and on; a standard key whose code is the power key's number (KEY_2) is not the power key |
 
 Build and run on the host:
 
