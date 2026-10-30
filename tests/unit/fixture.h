@@ -21,6 +21,7 @@
 
 #include "DisplayManager.h"
 #include "fakebus.h"
+#include "fakehost.h"
 #include "fakehw.h"
 
 #include <gtest/gtest.h>
@@ -57,6 +58,8 @@ protected:
     {
         fakebus::reset();
         fakehw::reset();
+        fakehost::reset();
+        setUpHost();
         dm = new DisplayManager();
     }
 
@@ -65,6 +68,9 @@ protected:
         delete dm;
         dm = nullptr;
     }
+
+    // What the host lacks for this test, before the DisplayManager is made.
+    virtual void setUpHost() {}
 
     // Call a com.palm.display method as a client would.
     fakebus::MethodResult call(const std::string& category, const std::string& method,

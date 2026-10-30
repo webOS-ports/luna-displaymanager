@@ -3307,12 +3307,18 @@ void DisplayManager::backlightOn (int displayBrightness, int keyBrightness)
 
     // Ignore als for now (led-controller module needs t
     LedControl* lcKeypadAndDisplay = HostBase::instance()->getLedControlKeypadAndDisplay();
-    if (NULL == lcKeypadAndDisplay)
+    if (NULL == lcKeypadAndDisplay) {
         g_message("%s: LedControlKeypad returns NULL", __PRETTY_FUNCTION__);
+        // no backlight controller (an emulator or VM): the panel is lit as
+        // soon as the compositor has it on. Say so, as backlightOff() does
+        // for off; otherwise m_backlightIsOn stays false and every power key
+        // press is dropped as "backlight not on yet".
+        backlightOnCallback(this);
+        return;
+    }
 
-    if (lcKeypadAndDisplay)
-        lcKeypadAndDisplay->setBrightness(keyBrightness,
-            displayBrightness, &DisplayManager::backlightOnCallback, this);
+    lcKeypadAndDisplay->setBrightness(keyBrightness,
+        displayBrightness, &DisplayManager::backlightOnCallback, this);
 }
 
 void DisplayManager::backlightOnCallback(void *ctx)

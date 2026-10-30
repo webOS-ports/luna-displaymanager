@@ -27,6 +27,8 @@
 #include "Preferences.h"
 #include "DeviceInfo.h"
 
+#include "fakehost.h"
+
 #include <QCoreApplication>
 
 #include <gtest/gtest.h>
@@ -43,6 +45,8 @@ int main(int argc, char** argv)
 
     HostBase* host = HostBase::instance();
     host->init(settings->displayWidth, settings->displayHeight);
+    // In front of it, so a test can take its backlight controller away.
+    fakehost::install(host);
 
     QCoreApplication app(argc, argv);
 

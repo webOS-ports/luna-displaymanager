@@ -26,6 +26,10 @@
  * The emulator keys module passes a keyboard's keys through as standard keys
  * with their Linux codes, and KEY_2 is 3, the same number as
  * NYX_KEYS_CUSTOM_KEY_POWER_ON; only the key type tells them apart.
+ *
+ * An emulator or VM has no backlight controller. The display states act on
+ * the power key only once the backlight is on, so the backlight has to count
+ * as on there once the display is.
  */
 
 #include "fixture.h"
@@ -109,4 +113,33 @@ TEST_F(DisplayManagerTest, StandardKeyWithThePowerKeysNumberIsNotThePowerKey)
 
     pressAndRelease(KEY_2, NYX_KEY_TYPE_STANDARD);
     EXPECT_EQ(Peer::state(dm), before);
+}
+
+// An emulator or VM: no backlight controller.
+class NoBacklightTest : public DisplayManagerTest {
+protected:
+    void setUpHost() override { fakehost::setBacklightController(false); }
+};
+
+TEST_F(NoBacklightTest, BacklightCountsAsOnOnceTheDisplayIs)
+{
+    setState("on");
+    ASSERT_TRUE(lit(Peer::state(dm)));
+    EXPECT_TRUE(Peer::backlightOn(dm));
+    EXPECT_EQ(fakehw::backlightWrites(), 0);
+
+    setState("off");
+    EXPECT_FALSE(Peer::backlightOn(dm));
+}
+
+TEST_F(NoBacklightTest, PowerKeySwitchesTheDisplayOffAndOn)
+{
+    setState("on");
+    ASSERT_TRUE(lit(Peer::state(dm)));
+
+    powerKey();
+    EXPECT_EQ(Peer::state(dm), DisplayStateOff);
+
+    powerKey();
+    EXPECT_TRUE(lit(Peer::state(dm)));
 }
