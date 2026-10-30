@@ -157,3 +157,86 @@ TEST_F(DisplayManagerTest, CallAlertStateIsNotClearedByUserActivity)
     userActivity();
     EXPECT_EQ(before, Peer::alertState(dm));
 }
+
+namespace {
+
+void displayOn()
+{
+    fakebus::callMethod("com.palm.display", "/control", "setState", "{\"state\":\"on\"}",
+                        "com.example.test", false);
+}
+
+// A call nobody answers, as the cardshell reports it: the call popup is an
+// alert window, so the ringing (phonecall-*) and the alert count
+// (generic-*) are reported side by side, in either order. The call ends
+// while the missed call is still up.
+void missedCall(bool ringingFirst)
+{
+    if (ringingFirst) {
+        ASSERT_TRUE(alertCall("phonecall-activated"));
+        ASSERT_TRUE(alertCall("generic-activated"));
+    } else {
+        ASSERT_TRUE(alertCall("generic-activated"));
+        ASSERT_TRUE(alertCall("phonecall-activated"));
+    }
+    ASSERT_TRUE(alertCall("phonecall-deactivated"));
+}
+
+} // namespace
+
+// A call's claim on the display ends with the call. After a missed call the
+// user lights the display and dismisses the missed call: the display stays
+// on. It went off in their hand, because the call's claim outlived the call
+// and kept userTookDisplay() from dropping the remembered Off.
+TEST_F(DisplayManagerTest, DismissingAMissedCallKeepsTheDisplayOn)
+{
+    for (bool ringingFirst : {true, false}) {
+        SCOPED_TRACE(ringingFirst ? "phonecall-activated first" : "generic-activated first");
+        displayOff();
+        ASSERT_FALSE(lit(Peer::state(dm)));
+        missedCall(ringingFirst);
+
+        displayOn();
+        userActivity();
+        ASSERT_TRUE(lit(Peer::state(dm)));
+        ASSERT_TRUE(alertCall("generic-deactivated"));
+        EXPECT_TRUE(lit(Peer::state(dm)));
+    }
+}
+
+// What the phone did: a missed call is still up (its popup keeps the alert
+// count above zero, so no new generic-activated follows), the display is
+// off, and a second call rings and goes unanswered. The user lights the
+// display with the power key and dismisses the missed calls; the cardshell
+// sends generic-deactivated, and the display went off in their hand.
+TEST_F(DisplayManagerTest, DismissingMissedCallsAfterASecondCallKeepsTheDisplayOn)
+{
+    ASSERT_TRUE(lit(Peer::state(dm)));
+    ASSERT_TRUE(alertCall("generic-activated"));
+    ASSERT_TRUE(alertCall("phonecall-activated"));
+    ASSERT_TRUE(alertCall("phonecall-deactivated"));
+
+    displayOff();
+    ASSERT_FALSE(lit(Peer::state(dm)));
+    ASSERT_TRUE(alertCall("phonecall-activated"));
+    ASSERT_TRUE(lit(Peer::state(dm)));
+    ASSERT_TRUE(alertCall("phonecall-deactivated"));
+    EXPECT_FALSE(lit(Peer::state(dm)));
+
+    displayOn();
+    userActivity();
+    ASSERT_TRUE(lit(Peer::state(dm)));
+    ASSERT_TRUE(alertCall("generic-deactivated"));
+    EXPECT_TRUE(lit(Peer::state(dm)));
+}
+
+// Once the call is over, nothing is left of it to hand back: the remembered
+// state is gone even before anyone touches the device.
+TEST_F(DisplayManagerTest, CallsClaimEndsWithTheCall)
+{
+    displayOff();
+    ASSERT_FALSE(lit(Peer::state(dm)));
+    ASSERT_TRUE(alertCall("phonecall-activated"));
+    ASSERT_TRUE(alertCall("phonecall-deactivated"));
+    EXPECT_EQ(-1, Peer::alertState(dm));
+}
