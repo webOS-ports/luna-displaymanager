@@ -4187,6 +4187,32 @@ bool DisplayManager::unlockRequiresPasscode() const
     return m_unlockRequiresPasscode;
 }
 
+/*
+ * Called once the lock mode is known. Lets through an unlock that was
+ * refused only because it was not known yet - and only that one, once:
+ * a passcode (or a pending policy that wants one), any lock() since the
+ * refusal, or the state machine having moved on all drop it, so the
+ * passcode case stays exactly as locked as before.
+ */
+void DisplayManager::releaseDeferredUnlock()
+{
+    if (!m_unlockDeferred)
+        return;
+    m_unlockDeferred = false;
+
+    if (m_unlockRequiresPasscode)
+        return;
+    if (m_lockState != DisplayLockLocked)
+        return;
+    if (m_lockGeneration != m_deferredUnlockGeneration)
+        return;
+    if (!m_currentState || currentState() != m_deferredUnlockState)
+        return;
+
+    g_message("%s: no passcode set, releasing the deferred unlock", __PRETTY_FUNCTION__);
+    m_currentState->handleEvent(DisplayEventUnlockScreen);
+}
+
 bool DisplayManager::cbDeviceLockModeChanged(LSHandle* handle, LSMessage* message, void* ctx)
 {
     DisplayManager* dm = (DisplayManager*) ctx;
@@ -4223,6 +4249,8 @@ bool DisplayManager::cbDeviceLockModeChanged(LSHandle* handle, LSMessage* messag
         dm->m_unlockRequiresPasscode = (lockMode != "none") ||
             (policyState == "pending" && policyRequiresPassword);
         dm->m_passcodeSet = (lockMode != "none");
+        dm->m_lockModeKnown = true;
+        dm->releaseDeferredUnlock();
     }
 
     json_object_put(root);
@@ -4257,6 +4285,17 @@ bool DisplayManager::updateLockState (DisplayLockState lockState, DisplayState d
         {
             g_warning("%s: Can't unlock as we have a passcode set", __PRETTY_FUNCTION__);
             lock();
+            if (!m_lockModeKnown) {
+                // Only "set" because luna-authmanager has not answered yet
+                // (m_unlockRequiresPasscode starts out true). Without this
+                // the boot-time DisplayOn enter, which always runs before
+                // that answer, leaves a device with no passcode locked for
+                // good: nothing else asks for the unlock again.
+                g_message("%s: lock mode not known yet, unlock deferred", __PRETTY_FUNCTION__);
+                m_unlockDeferred = true;
+                m_deferredUnlockGeneration = m_lockGeneration;
+                m_deferredUnlockState = currentState();
+            }
             return false;
         }
 
