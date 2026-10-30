@@ -3774,6 +3774,16 @@ bool DisplayManager::alert (int state)
                 }
                 m_currentState->handleEvent (DisplayEventIncomingCallDone);
             }
+            // The call's claim on the display ends with the call: it has
+            // handed the display back above, or the call was answered. Kept,
+            // it outlived the call - userTookDisplay() leaves a call's claim
+            // alone - and the next deactivation of anything (dismissing the
+            // missed call, swiping the last notification) put the display
+            // back to the Off the call had found, under the user's hand.
+            m_alertIsCall = false;
+            m_alertState = DISPLAY_UNDEFINED;
+            if (m_alertTimer->running ())
+                m_alertTimer->stop ();
             break;
         case DISPLAY_ALERT_GENERIC_DEACTIVATED:
         case DISPLAY_BANNER_DEACTIVATED:
