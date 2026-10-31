@@ -24,6 +24,8 @@
 #ifndef FAKEHW_H
 #define FAKEHW_H
 
+#include <nyx/nyx_client.h>
+
 #include <string>
 
 namespace fakehw {
@@ -37,6 +39,12 @@ int backlightWrites();
 bool bearingLocationSet();
 double bearingLatitude();
 double bearingLongitude();
+
+// Key events for the nyx keys device to hand out, in order, as the keys
+// module would: a key code and whether it is a webOS custom key or a
+// standard (Linux) one, pressed or released.
+void queueKey(int key, nyx_key_type_t type, bool press);
+size_t queuedKeys();
 
 // luna-prefs: com.palm.display's stored values, as JSON text.
 void setAppPref(const std::string& key, const std::string& json);
