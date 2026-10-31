@@ -56,6 +56,7 @@ struct State {
     std::deque<std::unique_ptr<nyx_device>> devices;
     std::deque<nyx_event> keys;
     nyx_event current = {};
+    std::map<nyx_device_type_t, int> eventSources;
 };
 
 State& state()
@@ -80,6 +81,8 @@ double bearingLongitude() { return state().longitude; }
 void queueKey(int key, nyx_key_type_t type, bool press) { state().keys.push_back({key, type, press}); }
 size_t queuedKeys() { return state().keys.size(); }
 
+void setEventSource(nyx_device_type_t type, int fd) { state().eventSources[type] = fd; }
+
 void setAppPref(const std::string& key, const std::string& json) { state().appPrefs[key] = json; }
 void clearAppPrefs() { state().appPrefs.clear(); }
 
@@ -92,6 +95,7 @@ void reset()
     s.latitude = s.longitude = 0;
     s.appPrefs.clear();
     s.keys.clear();
+    s.eventSources.clear();
 }
 
 } // namespace fakehw
@@ -120,13 +124,20 @@ nyx_error_t nyx_device_close(nyx_device_handle_t handle)
     return NYX_ERROR_NONE;
 }
 
-// No device produces events: nothing for a socket notifier to watch.
+// Unless a test says otherwise a device has nothing for a socket notifier to
+// watch.
 nyx_error_t nyx_device_get_event_source(nyx_device_handle_t handle, int32_t* source_out_ptr)
 {
-    (void)handle;
     if (source_out_ptr)
         *source_out_ptr = -1;
-    return NYX_ERROR_DEVICE_UNAVAILABLE;
+    if (!handle)
+        return NYX_ERROR_INVALID_HANDLE;
+    auto source = state().eventSources.find(handle->type);
+    if (source == state().eventSources.end())
+        return NYX_ERROR_DEVICE_UNAVAILABLE;
+    if (source_out_ptr)
+        *source_out_ptr = source->second;
+    return NYX_ERROR_NONE;
 }
 
 // Only the keys device has events: the ones a test queued, one at a time.

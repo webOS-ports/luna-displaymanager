@@ -48,6 +48,8 @@ private:
 
 
     void setupEventSources();
+    void setupKeyboardEventSource();
+    void setupTouchpanelEventSource();
 };
 
 #endif // INPUTEVENTMONITOR_H

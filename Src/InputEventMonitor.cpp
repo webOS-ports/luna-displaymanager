@@ -26,7 +26,11 @@
 #include "CustomEvents.h"
 
 InputEventMonitor::InputEventMonitor(QObject *parent) :
-    QObject(parent)
+    QObject(parent),
+    mKeyboardNotifier(0),
+    mKeyboardHandle(NULL),
+    mTouchpanelNotifier(0),
+    mTouchpanelHandle(NULL)
 {
     setupEventSources();
 }
@@ -41,6 +45,13 @@ InputEventMonitor* InputEventMonitor::instance()
 }
 
 void InputEventMonitor::setupEventSources()
+{
+    // Separately: a device that fails must not cost the other one its events.
+    setupKeyboardEventSource();
+    setupTouchpanelEventSource();
+}
+
+void InputEventMonitor::setupKeyboardEventSource()
 {
     nyx_error_t error = NYX_ERROR_NONE;
 
@@ -65,6 +76,11 @@ void InputEventMonitor::setupEventSources()
     else {
         qWarning() << __PRETTY_FUNCTION__ << "Got invalid keyboard input control object";
     }
+}
+
+void InputEventMonitor::setupTouchpanelEventSource()
+{
+    nyx_error_t error = NYX_ERROR_NONE;
 
     InputControl *touchpanelControl = HostBase::instance()->getInputControlTouchpanel();
     if (touchpanelControl) {

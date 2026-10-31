@@ -46,6 +46,10 @@ double bearingLongitude();
 void queueKey(int key, nyx_key_type_t type, bool press);
 size_t queuedKeys();
 
+// The file descriptor nyx hands out as a device's event source. A device
+// without one fails nyx_device_get_event_source().
+void setEventSource(nyx_device_type_t type, int fd);
+
 // luna-prefs: com.palm.display's stored values, as JSON text.
 void setAppPref(const std::string& key, const std::string& json);
 void clearAppPrefs();
