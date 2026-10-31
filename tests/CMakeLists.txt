@@ -29,19 +29,24 @@ set(DM_SANITIZE "" CACHE STRING
 add_executable(displaymanager-tests
     $<TARGET_OBJECTS:displaymanager-core>
     fakes/fakebus.cpp
+    fakes/fakehost.cpp
     fakes/fakehw.cpp
     unit/main.cpp
     unit/test_power.cpp
     unit/test_location.cpp
     unit/test_methods.cpp
     unit/test_calls.cpp
-    unit/test_alerts.cpp)
+    unit/test_alerts.cpp
+    unit/test_keys.cpp)
 
 target_include_directories(displaymanager-tests PRIVATE fakes unit)
 
 # gtest is built with exceptions and RTTI; the daemon is not, which does not
 # matter across the object boundary.
 target_compile_options(displaymanager-tests PRIVATE -frtti -fexceptions -Wextra)
+# Except for a class derived from one of LunaSysMgrCommon's, which is built
+# without RTTI and so has no typeinfo for its classes to derive from.
+set_source_files_properties(fakes/fakehost.cpp PROPERTIES COMPILE_OPTIONS -fno-rtti)
 
 set_target_properties(displaymanager-tests PROPERTIES ENABLE_EXPORTS ON)
 

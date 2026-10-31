@@ -97,9 +97,12 @@ void InputEventMonitor::readKeyboardData()
     while ((error = nyx_device_get_event(mKeyboardHandle, &event_handle)) == NYX_ERROR_NONE && event_handle != NULL)
     {
         int keycode = 0;
+        nyx_key_type_t key_type = NYX_KEY_TYPE_UNDEFINED;
         bool is_press = false;
 
         error = nyx_keys_event_get_key(event_handle, &keycode);
+        if (error == NYX_ERROR_NONE)
+            error = nyx_keys_event_get_key_type(event_handle, &key_type);
         if (error == NYX_ERROR_NONE)
             error = nyx_keys_event_get_key_is_press(event_handle, &is_press);
         if (error != NYX_ERROR_NONE) {
@@ -107,7 +110,11 @@ void InputEventMonitor::readKeyboardData()
             return;
         }
 
-        if (keycode == NYX_KEYS_CUSTOM_KEY_POWER_ON)
+        // The power key is a webOS custom key. A standard key carries its
+        // Linux keycode instead, and KEY_2 is 3, the same number as
+        // NYX_KEYS_CUSTOM_KEY_POWER_ON: the emulator keys module passes a
+        // keyboard's keys through, so typing "2" would switch the display off.
+        if (key_type == NYX_KEY_TYPE_CUSTOM && keycode == NYX_KEYS_CUSTOM_KEY_POWER_ON)
             DisplayManager::instance()->handlePowerKey(is_press);
 
         error = nyx_device_release_event(mKeyboardHandle, event_handle);

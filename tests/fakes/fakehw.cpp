@@ -36,6 +36,13 @@ struct nyx_device_iterator {
     int done;
 };
 
+// A keys event, as nyx_device_get_event() hands one out.
+struct nyx_event {
+    int32_t key;
+    nyx_key_type_t type;
+    bool press;
+};
+
 namespace {
 
 struct State {
@@ -47,6 +54,8 @@ struct State {
     double longitude = 0;
     std::map<std::string, std::string> appPrefs;
     std::deque<std::unique_ptr<nyx_device>> devices;
+    std::deque<nyx_event> keys;
+    nyx_event current = {};
 };
 
 State& state()
@@ -68,6 +77,9 @@ bool bearingLocationSet() { return state().bearingSet; }
 double bearingLatitude() { return state().latitude; }
 double bearingLongitude() { return state().longitude; }
 
+void queueKey(int key, nyx_key_type_t type, bool press) { state().keys.push_back({key, type, press}); }
+size_t queuedKeys() { return state().keys.size(); }
+
 void setAppPref(const std::string& key, const std::string& json) { state().appPrefs[key] = json; }
 void clearAppPrefs() { state().appPrefs.clear(); }
 
@@ -79,6 +91,7 @@ void reset()
     s.bearingSet = false;
     s.latitude = s.longitude = 0;
     s.appPrefs.clear();
+    s.keys.clear();
 }
 
 } // namespace fakehw
@@ -116,12 +129,21 @@ nyx_error_t nyx_device_get_event_source(nyx_device_handle_t handle, int32_t* sou
     return NYX_ERROR_DEVICE_UNAVAILABLE;
 }
 
+// Only the keys device has events: the ones a test queued, one at a time.
 nyx_error_t nyx_device_get_event(nyx_device_handle_t handle, nyx_event_handle_t* event_out_ptr)
 {
-    (void)handle;
-    if (event_out_ptr)
-        *event_out_ptr = nullptr;
-    return NYX_ERROR_DEVICE_UNAVAILABLE;
+    if (!event_out_ptr)
+        return NYX_ERROR_INVALID_VALUE;
+    *event_out_ptr = nullptr;
+    if (!handle || handle->type != NYX_DEVICE_KEYS)
+        return NYX_ERROR_DEVICE_UNAVAILABLE;
+    State& s = state();
+    if (s.keys.empty())
+        return NYX_ERROR_NONE;
+    s.current = s.keys.front();
+    s.keys.pop_front();
+    *event_out_ptr = &s.current;
+    return NYX_ERROR_NONE;
 }
 
 nyx_error_t nyx_device_release_event(nyx_device_handle_t handle, nyx_event_handle_t event_handle)
@@ -245,12 +267,34 @@ nyx_error_t nyx_touchpanel_set_mode(nyx_device_handle_t handle, int32_t mode_mas
     return NYX_ERROR_NONE;
 }
 
-// Event readers: never reached, as no device has an event source.
+nyx_error_t nyx_keys_event_get_key(nyx_event_handle_t handle, int32_t* key_out_ptr)
+{
+    if (!handle || !key_out_ptr)
+        return NYX_ERROR_INVALID_VALUE;
+    *key_out_ptr = handle->key;
+    return NYX_ERROR_NONE;
+}
+
+nyx_error_t nyx_keys_event_get_key_type(nyx_event_handle_t handle, nyx_key_type_t* key_type_out_ptr)
+{
+    if (!handle || !key_type_out_ptr)
+        return NYX_ERROR_INVALID_VALUE;
+    *key_type_out_ptr = handle->type;
+    return NYX_ERROR_NONE;
+}
+
+nyx_error_t nyx_keys_event_get_key_is_press(nyx_event_handle_t handle, bool* key_is_press_out_ptr)
+{
+    if (!handle || !key_is_press_out_ptr)
+        return NYX_ERROR_INVALID_VALUE;
+    *key_is_press_out_ptr = handle->press;
+    return NYX_ERROR_NONE;
+}
+
+// The other event readers: never reached, as no other device has events.
 #define NO_EVENT(name, type) \
     nyx_error_t name(nyx_event_handle_t handle, type out) { (void)handle; (void)out; return NYX_ERROR_DEVICE_UNAVAILABLE; }
 
-NO_EVENT(nyx_keys_event_get_key, int32_t*)
-NO_EVENT(nyx_keys_event_get_key_is_press, bool*)
 NO_EVENT(nyx_sensor_als_event_get_intensity, int32_t*)
 NO_EVENT(nyx_sensor_proximity_event_get_presence, int32_t*)
 NO_EVENT(nyx_sensor_acceleration_event_get_item, nyx_sensor_acceleration_event_item_t*)
