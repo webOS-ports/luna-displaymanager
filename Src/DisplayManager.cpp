@@ -1417,6 +1417,11 @@ Set the state of the display.
 \li unlock
 \li dock
 \li undock
+\param token For "unlock" while a passcode is set: the unlockToken that
+       com.palm.systemmanager/matchDevicePasscode gave this caller. It is
+       spent through com.webos.service.auth/consumeUnlockToken before the
+       display unlocks, and the reply waits for that. Without it, or with
+       one that is not good, the unlock is refused.
 
 \subsection com_palm_display_control_set_state_returns Returns:
 \code
@@ -1453,10 +1458,10 @@ bool DisplayManager::controlSetState(LSHandle *sh, LSMessage *message, void *ctx
     LSError lserror;
     LSErrorInit(&lserror);
 
-    // {"state" : string}
+    // {"state" : string, "token": string}; token only for "unlock"
     VALIDATE_SCHEMA_AND_RETURN(sh,
                                message,
-                               SCHEMA_1(REQUIRED(state, string)));
+                               SCHEMA_2(REQUIRED(state, string), OPTIONAL(token, string)));
 
     bool result = false;
     DisplayManager *dm = ((DisplayCallbackCtx_t *)ctx)->ctx;
@@ -1495,9 +1500,24 @@ bool DisplayManager::controlSetState(LSHandle *sh, LSMessage *message, void *ctx
     }
     else if (0 == strcmp (value, "unlock"))
     {
-        g_message ("%s: calling unlock()", __PRETTY_FUNCTION__);
-        dm->on ();
-        dm->unlock ();
+        if (dm->unlockRequiresToken())
+        {
+            // Answered once luna-authmanager has spent the token.
+            const char* errorText = NULL;
+            if (dm->requestTokenUnlock(sh, message, root, true, errorText))
+            {
+                json_object_put(root);
+                return true;
+            }
+            g_warning ("%s: unlock refused: %s", __PRETTY_FUNCTION__, errorText);
+            result = false;
+        }
+        else
+        {
+            g_message ("%s: calling unlock()", __PRETTY_FUNCTION__);
+            dm->on ();
+            dm->unlock ();
+        }
     }
     else if (0 == strcmp (value, "dock"))
     {
@@ -2865,13 +2885,22 @@ done:
     return true;
 }
 
+/*
+ * com.palm.display/control/setLockStatus {"status": "lock" | "unlock", "token": string}
+ *
+ * "lock" needs nothing. "unlock" while a passcode is set needs the
+ * unlockToken luna-authmanager gave this caller for the right passcode (or
+ * for a finger or face it allowed); it is spent there before the display
+ * unlocks, and the reply waits for that. Without one the screen stays
+ * locked: the lock is no longer the lock screen's word alone.
+ */
 bool DisplayManager::controlSetLockStatus(LSHandle *sh, LSMessage *message, void *ctx)
 {
     LSError lserror;
     LSErrorInit(&lserror);
 
-    // {"status": string}
-    VALIDATE_SCHEMA_AND_RETURN(sh, message, SCHEMA_1(REQUIRED(status, string)));
+    // {"status": string, "token": string}; token only for "unlock"
+    VALIDATE_SCHEMA_AND_RETURN(sh, message, SCHEMA_2(REQUIRED(status, string), OPTIONAL(token, string)));
 
     bool result = false;
     const char* str = LSMessageGetPayload(message);
@@ -2898,8 +2927,19 @@ bool DisplayManager::controlSetLockStatus(LSHandle *sh, LSMessage *message, void
             result = true;
         }
         else if (g_strcmp0(status, "unlock") == 0) {
-            dm->unlock();
-            result = true;
+            if (!dm->unlockRequiresToken()) {
+                dm->unlock();
+                result = true;
+            }
+            else if (dm->requestTokenUnlock(sh, message, root, false, errorText)) {
+                // Answered once luna-authmanager has spent the token.
+                json_object_put(root);
+                return true;
+            }
+            else {
+                g_warning("%s: unlock refused: %s", __PRETTY_FUNCTION__, errorText);
+                errorCode = 2;
+            }
         }
         else {
             errorText = "Unknown status";
@@ -2931,6 +2971,17 @@ done:
 
 DisplayManager::~DisplayManager()
 {
+    // Unlocks still waiting on luna-authmanager are dropped unanswered.
+    for (PendingUnlock* p : m_pendingUnlocks) {
+        LSError lserror;
+        LSErrorInit(&lserror);
+        if (p->call != LSMESSAGE_TOKEN_INVALID && !LSCallCancel(p->sh, p->call, &lserror))
+            LSErrorFree(&lserror);
+        LSMessageUnref(p->message);
+        delete p;
+    }
+    m_pendingUnlocks.clear();
+
     // Stop timers first
     if (m_activity) {
         m_activity->stop();
@@ -3822,7 +3873,118 @@ bool DisplayManager::alert (int state)
 
 void DisplayManager::lock()
 {
+    ++m_lockGeneration;
     m_currentState->handleEvent(DisplayEventLockScreen);
+}
+
+/*
+ * Hands the token in root to luna-authmanager to spend for the caller of
+ * message. True if it was handed over, and the caller is answered from
+ * cbUnlockTokenSpent(); false (with why) if the request is refused here.
+ */
+bool DisplayManager::requestTokenUnlock(LSHandle* sh, LSMessage* message, json_object* root,
+                                        bool turnOn, const char*& errorText)
+{
+    json_object* tokenObj = 0;
+    if (!json_object_object_get_ex(root, "token", &tokenObj) ||
+        !json_object_is_type(tokenObj, json_type_string) ||
+        json_object_get_string_len(tokenObj) == 0) {
+        errorText = "A passcode is set: unlocking takes the token from matchDevicePasscode";
+        return false;
+    }
+
+    // The token is bound to whoever matched the passcode; it is spent on
+    // behalf of whoever is asking now, and the two have to be the same.
+    const char* requester = LSMessageGetSenderServiceName(message);
+    if (!requester || !*requester) {
+        errorText = "Unlocking takes a caller with a service name";
+        return false;
+    }
+
+    json_object* req = json_object_new_object();
+    json_object_object_add(req, "token", json_object_new_string(json_object_get_string(tokenObj)));
+    json_object_object_add(req, "requester", json_object_new_string(requester));
+    json_object_object_add(req, "purpose", json_object_new_string("unlock"));
+
+    PendingUnlock* p = new PendingUnlock{this, sh, message, LSMESSAGE_TOKEN_INVALID, m_lockGeneration, turnOn};
+    LSMessageRef(message);
+
+    LSError lserror;
+    LSErrorInit(&lserror);
+    bool sent = LSCallOneReply(sh, "luna://com.webos.service.auth/consumeUnlockToken",
+                               json_object_to_json_string(req), DisplayManager::cbUnlockTokenSpent,
+                               p, &p->call, &lserror);
+    json_object_put(req);
+
+    if (!sent) {
+        LSErrorPrint(&lserror, stderr);
+        LSErrorFree(&lserror);
+        LSMessageUnref(message);
+        delete p;
+        errorText = "Cannot reach the authentication manager";
+        return false;
+    }
+
+    m_pendingUnlocks.push_back(p);
+    return true;
+}
+
+bool DisplayManager::cbUnlockTokenSpent(LSHandle*, LSMessage* reply, void* ctx)
+{
+    PendingUnlock* p = static_cast<PendingUnlock*>(ctx);
+
+    // Only {"returnValue": true, "valid": true} unlocks; an error, or the
+    // hub's reply for authmanager going away, does not.
+    bool valid = false;
+    const char* payload = LSMessageGetPayload(reply);
+    json_object* root = payload ? json_tokener_parse(payload) : 0;
+    if (root && json_object_is_type(root, json_type_object)) {
+        json_object* rv = 0;
+        json_object* v = 0;
+        valid = json_object_object_get_ex(root, "returnValue", &rv) &&
+                json_object_is_type(rv, json_type_boolean) && json_object_get_boolean(rv) &&
+                json_object_object_get_ex(root, "valid", &v) &&
+                json_object_is_type(v, json_type_boolean) && json_object_get_boolean(v);
+    }
+    if (root)
+        json_object_put(root);
+
+    p->dm->finishTokenUnlock(p, valid);
+    return true;
+}
+
+void DisplayManager::finishTokenUnlock(PendingUnlock* p, bool valid)
+{
+    std::vector<PendingUnlock*>::iterator it =
+        std::find(m_pendingUnlocks.begin(), m_pendingUnlocks.end(), p);
+    if (it != m_pendingUnlocks.end())
+        m_pendingUnlocks.erase(it);
+
+    const char* answer = "{\"returnValue\":true}";
+    if (!valid) {
+        g_warning("%s: unlock refused: the token was not good", __PRETTY_FUNCTION__);
+        answer = "{\"returnValue\":false,\"errorCode\":2,\"errorText\":\"Unlock refused\"}";
+    }
+    else if (p->lockGeneration != m_lockGeneration) {
+        // Locked again while the token was being checked: that lock wins.
+        g_warning("%s: unlock refused: locked again meanwhile", __PRETTY_FUNCTION__);
+        answer = "{\"returnValue\":false,\"errorCode\":3,\"errorText\":\"Locked again\"}";
+    }
+    else {
+        g_message("%s: token accepted, calling unlock()", __PRETTY_FUNCTION__);
+        if (p->turnOn)
+            on();
+        unlock();
+    }
+
+    LSError lserror;
+    LSErrorInit(&lserror);
+    if (!LSMessageReply(p->sh, p->message, answer, &lserror)) {
+        LSErrorPrint(&lserror, stderr);
+        LSErrorFree(&lserror);
+    }
+    LSMessageUnref(p->message);
+    delete p;
 }
 
 void DisplayManager::unlock()
@@ -4022,6 +4184,15 @@ void DisplayManager::emitDisplayStateChange (int displaySignal)
     }
 }
 
+bool DisplayManager::unlockRequiresToken() const
+{
+    // A passcode is set, so only a token for it unlocks over the bus. Not
+    // unlockRequiresPasscode(): a pending EAS policy with no passcode set
+    // yet has no secret to earn a token with, and the lock screen has to
+    // be able to let its owner in to set one.
+    return m_passcodeSet;
+}
+
 bool DisplayManager::unlockRequiresPasscode() const
 {
     // Fed by the getDeviceLockMode subscription (see cbDeviceLockModeChanged):
@@ -4030,6 +4201,32 @@ bool DisplayManager::unlockRequiresPasscode() const
     // as requiring a passcode even before one is set - same fail-toward-
     // locked bias the old policyPending()/passwordRequired() check had.
     return m_unlockRequiresPasscode;
+}
+
+/*
+ * Called once the lock mode is known. Lets through an unlock that was
+ * refused only because it was not known yet - and only that one, once:
+ * a passcode (or a pending policy that wants one), any lock() since the
+ * refusal, or the state machine having moved on all drop it, so the
+ * passcode case stays exactly as locked as before.
+ */
+void DisplayManager::releaseDeferredUnlock()
+{
+    if (!m_unlockDeferred)
+        return;
+    m_unlockDeferred = false;
+
+    if (m_unlockRequiresPasscode)
+        return;
+    if (m_lockState != DisplayLockLocked)
+        return;
+    if (m_lockGeneration != m_deferredUnlockGeneration)
+        return;
+    if (!m_currentState || currentState() != m_deferredUnlockState)
+        return;
+
+    g_message("%s: no passcode set, releasing the deferred unlock", __PRETTY_FUNCTION__);
+    m_currentState->handleEvent(DisplayEventUnlockScreen);
 }
 
 bool DisplayManager::cbDeviceLockModeChanged(LSHandle* handle, LSMessage* message, void* ctx)
@@ -4067,6 +4264,9 @@ bool DisplayManager::cbDeviceLockModeChanged(LSHandle* handle, LSMessage* messag
 
         dm->m_unlockRequiresPasscode = (lockMode != "none") ||
             (policyState == "pending" && policyRequiresPassword);
+        dm->m_passcodeSet = (lockMode != "none");
+        dm->m_lockModeKnown = true;
+        dm->releaseDeferredUnlock();
     }
 
     json_object_put(root);
@@ -4101,6 +4301,17 @@ bool DisplayManager::updateLockState (DisplayLockState lockState, DisplayState d
         {
             g_warning("%s: Can't unlock as we have a passcode set", __PRETTY_FUNCTION__);
             lock();
+            if (!m_lockModeKnown) {
+                // Only "set" because luna-authmanager has not answered yet
+                // (m_unlockRequiresPasscode starts out true). Without this
+                // the boot-time DisplayOn enter, which always runs before
+                // that answer, leaves a device with no passcode locked for
+                // good: nothing else asks for the unlock again.
+                g_message("%s: lock mode not known yet, unlock deferred", __PRETTY_FUNCTION__);
+                m_unlockDeferred = true;
+                m_deferredUnlockGeneration = m_lockGeneration;
+                m_deferredUnlockState = currentState();
+            }
             return false;
         }
 

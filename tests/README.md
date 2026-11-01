@@ -48,6 +48,7 @@ getCachedPosition, audiod's getStatus.
 | `test_calls.cpp` | call state from audiod (`inCall`) and the proximity sensor held by the phone app |
 | `test_alerts.cpp` | an alert or banner that lit an off display puts it back to off when it ends, unless the user touched the device, pressed a key or unlocked in between; an incoming call keeps its own rule while it rings, and its claim ends with the call (a missed call then does not switch the display off under the user) |
 | `test_keys.cpp` | the power key from the nyx keys device switches the display off and on, with and without a backlight controller; a standard key whose code is the power key's number (KEY_2) is not the power key; the keys and the touchpanel are set up independently, so one that cannot be read leaves the other watched |
+| `test_unlock.cpp` | with a passcode set, `setLockStatus` and `setState` "unlock" only with a token that `consumeUnlockToken` honours (`{"returnValue":true,"valid":true}` and nothing else), answered after it; refused without one, before authmanager has answered, for a caller with no name, and when a lock came in between; no token needed without a passcode (also under a pending policy); "lock" needs nothing; a pending unlock cancelled on teardown; `com.palm.display` holding `auth.unlocktoken` |
 
 Build and run on the host:
 
