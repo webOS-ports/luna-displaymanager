@@ -38,6 +38,12 @@
 #include <linux/input.h>
 
 #include <QMetaObject>
+#include <QSocketNotifier>
+
+#include <algorithm>
+#include <vector>
+
+#include <unistd.h>
 
 namespace {
 
@@ -142,4 +148,62 @@ TEST_F(NoBacklightTest, PowerKeySwitchesTheDisplayOffAndOn)
 
     powerKey();
     EXPECT_TRUE(lit(Peer::state(dm)));
+}
+
+// Each input device is set up on its own: on a device whose keys cannot be
+// read the touchpanel, which counts as user activity, still has to be.
+class InputEventSources : public DisplayManagerTest {
+protected:
+    void SetUp() override
+    {
+        DisplayManagerTest::SetUp();
+        ASSERT_EQ(pipe(keysFds), 0);
+        ASSERT_EQ(pipe(touchFds), 0);
+    }
+
+    void TearDown() override
+    {
+        for (int fd : {keysFds[0], keysFds[1], touchFds[0], touchFds[1]})
+            close(fd);
+        DisplayManagerTest::TearDown();
+    }
+
+    static std::vector<int> watched(const InputEventMonitor& monitor)
+    {
+        std::vector<int> fds;
+        for (QSocketNotifier* notifier : monitor.findChildren<QSocketNotifier*>())
+            fds.push_back(static_cast<int>(notifier->socket()));
+        std::sort(fds.begin(), fds.end());
+        return fds;
+    }
+
+    int keysFds[2] = {-1, -1};
+    int touchFds[2] = {-1, -1};
+};
+
+TEST_F(InputEventSources, BothDevicesAreWatched)
+{
+    fakehw::setEventSource(NYX_DEVICE_KEYS, keysFds[0]);
+    fakehw::setEventSource(NYX_DEVICE_TOUCHPANEL, touchFds[0]);
+
+    InputEventMonitor monitor;
+    std::vector<int> both = {keysFds[0], touchFds[0]};
+    std::sort(both.begin(), both.end());
+    EXPECT_EQ(watched(monitor), both);
+}
+
+TEST_F(InputEventSources, TouchpanelIsWatchedWhenTheKeysCannotBeRead)
+{
+    fakehw::setEventSource(NYX_DEVICE_TOUCHPANEL, touchFds[0]);
+
+    InputEventMonitor monitor;
+    EXPECT_EQ(watched(monitor), std::vector<int>{touchFds[0]});
+}
+
+TEST_F(InputEventSources, KeysAreWatchedWhenTheTouchpanelCannotBeRead)
+{
+    fakehw::setEventSource(NYX_DEVICE_KEYS, keysFds[0]);
+
+    InputEventMonitor monitor;
+    EXPECT_EQ(watched(monitor), std::vector<int>{keysFds[0]});
 }
