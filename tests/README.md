@@ -47,7 +47,7 @@ getCachedPosition, audiod's getStatus.
 | `test_methods.cpp` | every method against hostile payloads; requestBlock and powerKeyBlock released with their client; failures not overwritten; timeout overflow; maximumBrightness kept in every state, clamped, stored, and posted clamped; values restored at start-up |
 | `test_calls.cpp` | call state from audiod (`inCall`) and the proximity sensor held by the phone app |
 | `test_alerts.cpp` | an alert or banner that lit an off display puts it back to off when it ends, unless the user touched the device, pressed a key or unlocked in between; an incoming call keeps its own rule while it rings, and its claim ends with the call (a missed call then does not switch the display off under the user) |
-| `test_keys.cpp` | the power key from the nyx keys device switches the display off and on, with and without a backlight controller; a standard key whose code is the power key's number (KEY_2) is not the power key |
+| `test_keys.cpp` | the power key from the nyx keys device switches the display off and on, with and without a backlight controller; a standard key whose code is the power key's number (KEY_2) is not the power key; the keys and the touchpanel are set up independently, so one that cannot be read leaves the other watched |
 
 Build and run on the host:
 
