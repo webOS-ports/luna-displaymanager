@@ -8,6 +8,7 @@
         "preferences.operation",
         "audio.operation",
         "auth.query",
+        "auth.unlocktoken",
         "luna-sysmgr.operation",
         "sleep.management",
         "surfacemanager.display"

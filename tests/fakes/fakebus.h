@@ -68,6 +68,9 @@ std::vector<Signal> signalsTo(const std::string& prefix);
 
 void clearRecords();
 
+// Messages a handler took a reference to (LSMessageRef) and has not let go.
+int heldMessages();
+
 // Deliver a reply to the call that got this token, as the bus would.
 bool reply(LSMessageToken token, const std::string& payload);
 

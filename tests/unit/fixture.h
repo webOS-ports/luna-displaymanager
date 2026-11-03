@@ -43,6 +43,8 @@ struct DisplayManagerTestPeer {
     // What the main loop would do when the timers expire.
     static void fireAlertTimer(DisplayManager* dm) { dm->alertTimerCallback(); }
     static void fireBannerWake(DisplayManager* dm) { dm->bannerWakeCallback(); }
+    static DisplayLockState lockState(DisplayManager* dm) { return dm->m_lockState; }
+    static size_t pendingUnlocks(DisplayManager* dm) { return dm->m_pendingUnlocks.size(); }
     static bool compassReply(LSHandle* sh, LSMessage* m, void* ctx)
     {
         return DisplayManager::updateCompassBearingInfo(sh, m, ctx);

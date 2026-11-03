@@ -39,6 +39,8 @@
 
 #include <luna-service2/lunaservice.h>
 
+#include <vector>
+
 #define DISPLAY_LOCK_SCREEN   1
 #define DISPLAY_UNLOCK_SCREEN 2
 #define DISPLAY_NIGHT_SCREEN  3
@@ -311,7 +313,36 @@ private:
     // without a passcode is not locked out - only implicit unlocks (USB,
     // dock) wait for the authoritative answer.
     bool m_unlockRequiresPasscode = true;
+    // Whether a passcode is set (lockMode not "none"); fail-closed in the
+    // same way until the first reply.
+    bool m_passcodeSet = true;
     LSMessageToken m_lockModeCallToken = LSMESSAGE_TOKEN_INVALID;
+    // Whether a getDeviceLockMode reply carrying lockMode has landed yet.
+    bool m_lockModeKnown = false;
+    // An implicit unlock (the boot DisplayOn enter, USB, dock) that was
+    // refused only because the lock mode was not known yet. The first
+    // answer releases it if no passcode is needed and nothing has locked
+    // the device on purpose since (m_lockGeneration still matches and the
+    // state machine is still where the refusal left it).
+    bool m_unlockDeferred = false;
+    uint32_t m_deferredUnlockGeneration = 0;
+    DisplayState m_deferredUnlockState = DisplayStateOff;
+    void releaseDeferredUnlock();
+
+    // An unlock waiting for luna-authmanager to spend its token.
+    struct PendingUnlock
+    {
+        DisplayManager* dm;
+        LSHandle* sh;
+        LSMessage* message;       // the caller's request, referenced until answered
+        LSMessageToken call;      // the consumeUnlockToken call
+        uint32_t lockGeneration;
+        bool turnOn;              // setState "unlock" lights the display too
+    };
+
+    // Bumped by every lock(): a token unlock asked for before it is void.
+    uint32_t m_lockGeneration = 0;
+    std::vector<PendingUnlock*> m_pendingUnlocks;
 
     SuspendBlocker<DisplayManager> m_suspendBlocker;
 
@@ -397,7 +428,21 @@ private:
     static bool displayOffCallback(LSHandle *handle, LSMessage *message, gpointer context);
 
     bool unlockRequiresPasscode() const;
+    bool unlockRequiresToken() const;
     static bool cbDeviceLockModeChanged(LSHandle* handle, LSMessage* message, void* ctx);
+
+    /*
+     * An unlock asked for over the bus (setLockStatus or setState "unlock")
+     * while a passcode is set takes the token luna-authmanager gave the
+     * caller for the right passcode. It is spent there
+     * (com.webos.service.auth/consumeUnlockToken) before anything unlocks,
+     * and the caller is answered once it has been: true and unlocked, or
+     * false and still locked. A lock in between voids the request.
+     */
+    bool requestTokenUnlock(LSHandle* sh, LSMessage* message, struct json_object* root,
+                            bool turnOn, const char*& errorText);
+    static bool cbUnlockTokenSpent(LSHandle* sh, LSMessage* reply, void* ctx);
+    void finishTokenUnlock(PendingUnlock* p, bool valid);
 
 private Q_SLOTS:
 
