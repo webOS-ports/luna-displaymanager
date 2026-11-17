@@ -37,7 +37,8 @@ add_executable(displaymanager-tests
     unit/test_methods.cpp
     unit/test_calls.cpp
     unit/test_alerts.cpp
-    unit/test_keys.cpp)
+    unit/test_keys.cpp
+    unit/test_als.cpp)
 
 target_include_directories(displaymanager-tests PRIVATE fakes unit)
 

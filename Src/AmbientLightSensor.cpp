@@ -120,6 +120,8 @@ AmbientLightSensor::AmbientLightSensor ()
     , m_alsDisabled(0)
     , m_alsHiddOnline(false)
     , m_als (0)
+    , m_light (NULL)
+    , m_heldLux (0.0)
     , m_alsHandle (NULL)
     , m_alsNotifier (0)
     , m_alsSampleHead (0)
@@ -187,6 +189,9 @@ AmbientLightSensor::AmbientLightSensor ()
     m_firstReadingTimer.setInterval(ALS_FIRST_READING_MS);
     connect(&m_firstReadingTimer, SIGNAL(timeout()), this, SLOT(slotFirstReadingTimeout()));
 
+    m_holdTimer.setInterval(ALS_HOLD_MS);
+    connect(&m_holdTimer, &QTimer::timeout, this, &AmbientLightSensor::slotHoldLux);
+
     for (int i = 0; i < ALS_REGION_COUNT; i++) {
         m_alsBorder[i] = kAlsBorderLux[i];
         m_alsMargin[i] = kAlsMarginLux[i];
@@ -201,12 +206,11 @@ AmbientLightSensor::AmbientLightSensor ()
     m_firstReadingTimer.start();
 
     /*
-     * Prefer nyx. The region estimation needs a magnitude in lux, and the Qt
-     * sensorfw plugin cannot supply one: it registers a lightsensor identifier
-     * but its SensorfwLightSensor backend only ever fills in a
-     * QAmbientLightReading, which carries Qt's pre-bucketed LightLevel. Those
-     * buckets are sized for an unobstructed sensor, so on a phone whose ALS
-     * sits under the cover glass every indoor reading arrives as "Dark".
+     * Prefer nyx, then Qt's QLightSensor; both report lux, which the region
+     * estimation needs. QAmbientLightSensor is the last resort: it carries
+     * only Qt's pre-bucketed LightLevel, sized for an unobstructed sensor, so
+     * on a phone whose ALS sits under the cover glass every indoor reading
+     * arrives as "Dark".
      */
     if (nyx_init() == NYX_ERROR_NONE)
         nyx_device_open(NYX_DEVICE_SENSOR_ALS, "Default", &m_alsHandle);
@@ -240,6 +244,29 @@ AmbientLightSensor::AmbientLightSensor ()
     }
 
     if (!m_alsHandle) {
+        /*
+         * A Halium device has no nyx ALS: its light sensor is reachable only
+         * through the Android sensors HAL, which sensorfwd reads. The sensorfw
+         * plugin's QLightSensor backend hands on sensorfwd's lux unchanged, and
+         * publishes the current value as soon as it starts, so the averaging,
+         * the margins and the cover-glass correction below apply to it too.
+         *
+         * Without that, a BraX3 reading 9-23 lux in a normally lit room got
+         * Qt's "Dark" (under 10) or "Twilight", and the display stayed dim.
+         */
+        m_light = new QLightSensor(this);
+        if (m_light->connectToBackend()) {
+            connect(m_light, &QLightSensor::readingChanged,
+                    this, &AmbientLightSensor::slotLightReadingChanged);
+        } else {
+            g_warning("%s: no QLightSensor backend; falling back to Qt's light levels",
+                      __PRETTY_FUNCTION__);
+            delete m_light;
+            m_light = NULL;
+        }
+    }
+
+    if (!m_alsHandle && !m_light) {
         m_als = new QAmbientLightSensor();
         connect(m_als, SIGNAL(readingChanged()), this, SLOT(slotReadingChanged()));
     }
@@ -287,6 +314,27 @@ void AmbientLightSensor::slotReadingChanged ()
     QAmbientLightReading *reading = m_als->reading();
     update(static_cast<int>(reading->lightLevel()));
     return;
+}
+
+void AmbientLightSensor::slotLightReadingChanged ()
+{
+    QLightReading *reading = m_light ? m_light->reading() : NULL;
+
+    if (!reading)
+        return;
+
+    m_heldLux = reading->lux();
+    updateAlsLux(m_heldLux);
+
+    /* Restarted, so a held sample only fills a gap between readings. */
+    if (m_alsIsOn)
+        m_holdTimer.start();
+}
+
+void AmbientLightSensor::slotHoldLux ()
+{
+    if (m_alsIsOn)
+        updateAlsLux(m_heldLux);
 }
 
 void AmbientLightSensor::readAlsData (int lux)
@@ -544,6 +592,9 @@ bool AmbientLightSensor::on ()
         return (error == NYX_ERROR_NONE || error == NYX_ERROR_NOT_IMPLEMENTED);
     }
 
+    if (NULL != m_light)
+        return m_light->start();
+
     if (NULL != m_als)
     {
         g_debug ("%s: ALS on!", __PRETTY_FUNCTION__);
@@ -580,6 +631,11 @@ bool AmbientLightSensor::off ()
     {
         nyx_device_set_operating_mode(m_alsHandle, NYX_OPERATING_MODE_OFF);
     }
+
+    m_holdTimer.stop();
+
+    if (NULL != m_light)
+        m_light->stop();
 
     if (NULL != m_als)
     {

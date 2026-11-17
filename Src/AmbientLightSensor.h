@@ -28,6 +28,7 @@
 #include <luna-service2/lunaservice.h>
 #include <list>
 #include <QAmbientLightSensor>
+#include <QLightSensor>
 #include <QSocketNotifier>
 #include <QTimer>
 
@@ -48,6 +49,9 @@
 /* How long to wait for the first reading after the sensor is switched on
  * before assuming indoor light. */
 #define ALS_FIRST_READING_MS   2000
+
+/* How often a Qt lux reading is counted again while no new one arrives. */
+#define ALS_HOLD_MS            250
 
 
 #define ALS_REGION_UNDEFINED  0
@@ -95,10 +99,23 @@ private:
     bool                   m_alsHiddOnline;
     QAmbientLightSensor*          m_als;
 
+    /* Lux from Qt, for a device with no nyx ALS (Halium: sensorfwd over the
+     * Android sensors HAL). A child of this object. When it is set, m_als is
+     * not: the light levels are only the last resort. */
+    QLightSensor*                 m_light;
+
+    /* An Android light sensor reports only on change: covered, it sends a
+     * single 0 and then nothing, and one 0 among seven bright samples keeps
+     * the running mean bright for good. So while m_light runs, the last lux
+     * it gave is counted again every ALS_HOLD_MS until a new one arrives,
+     * which makes the mean an average over time, as nyx's steady reports
+     * make it. */
+    QTimer                 m_holdTimer;
+    qreal                  m_heldLux;
+
     /* nyx is the preferred source: it reports lux, which the region
-     * estimation below needs. The Qt sensorfw plugin registers a lightsensor
-     * identifier but its backend only ever produces a QAmbientLightReading,
-     * i.e. the pre-bucketed LightLevel, so lux cannot be had that way. */
+     * estimation below needs, and its report rate follows the fast/slow
+     * sampling below; on Qt that sampling changes nothing. */
     nyx_device_handle_t           m_alsHandle;
     //! Our own reader on the nyx event source. Nothing else has one since
     //! luna-sysmgr-common retired HostArm's, so this one sees every event.
@@ -150,6 +167,8 @@ private:
 
 private Q_SLOTS:
     void slotReadingChanged ();
+    void slotLightReadingChanged ();
+    void slotHoldLux ();
     void readAlsData (int lux);
     void drainNyxAls ();
     void slotLevelSettled ();
