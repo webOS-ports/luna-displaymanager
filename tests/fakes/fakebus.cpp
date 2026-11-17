@@ -40,6 +40,7 @@ struct LSMessage {
     std::string appId;
     LSMessageToken responseToken = LSMESSAGE_TOKEN_INVALID;
     bool subscription = false;
+    int refs = 0;
     bool subscribed = false;
     std::vector<std::string>* replies = nullptr;
 };
@@ -205,6 +206,15 @@ std::vector<Signal> signalsTo(const std::string& prefix)
         if (s.uri.compare(0, prefix.size(), prefix) == 0)
             out.push_back(s);
     return out;
+}
+
+int heldMessages()
+{
+    int n = 0;
+    for (const auto& m : state().messages)
+        if (m->refs > 0)
+            n++;
+    return n;
 }
 
 void clearRecords()
@@ -504,6 +514,20 @@ bool LSRegisterServerStatusEx(LSHandle* sh, const char* serviceName, LSServerSta
     if (cookie)
         *cookie = nullptr;
     return true;
+}
+
+// Messages live as long as the fake bus does; the count is kept so a test
+// can see that a held message was let go.
+void LSMessageRef(LSMessage* message)
+{
+    if (message)
+        message->refs++;
+}
+
+void LSMessageUnref(LSMessage* message)
+{
+    if (message)
+        message->refs--;
 }
 
 const char* LSMessageGetPayload(LSMessage* message)
